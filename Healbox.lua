@@ -450,24 +450,28 @@ function Healbox:OnUpdateTimer()
 	local count = self.db.profile.buttonCount
 	
 	for frame in pairs(self.activeFrames) do
-		local unit = frame.TargetUnit
-		if unit and UnitIsVisible(unit) and not UnitIsDeadOrGhost(unit) then
-			for i = 1, count do
-				local btn = frame.spellButtons[i]
-				if btn and btn:IsShown() then
-					local spellName = self.db.profile.spells[i]
-					if spellName and spellName ~= "" then
-						local isUsable, notEnoughMana = IsUsableSpell(spellName)
-						if isUsable then
-							btn.icon:SetVertexColor(1, 1, 1)
-						elseif notEnoughMana then
-							btn.icon:SetVertexColor(0.5, 0.5, 1)
-						else
-							btn.icon:SetVertexColor(0.3, 0.3, 0.3)
-						end
-						
-						if (isUsable or notEnoughMana) and IsSpellInRange(spellName, unit) == 0 then
-							btn.icon:SetVertexColor(1, 0.3, 0.3)
+		if frame:IsShown() then
+			local unit = frame.TargetUnit
+			if unit and UnitIsVisible(unit) and not UnitIsDeadOrGhost(unit) then
+				for i = 1, count do
+					local btn = frame.spellButtons[i]
+					if btn and btn:IsShown() then
+						local spellName = self.db.profile.spells[i]
+						if spellName and spellName ~= "" then
+							local isUsable, notEnoughMana = IsUsableSpell(spellName)
+							local inRange = IsSpellInRange(spellName, unit)
+							
+							if isUsable then
+								btn.icon:SetVertexColor(1, 1, 1)
+							elseif notEnoughMana then
+								btn.icon:SetVertexColor(0.5, 0.5, 1)
+							else
+								btn.icon:SetVertexColor(0.3, 0.3, 0.3)
+							end
+							
+							if (isUsable or notEnoughMana) and inRange == 0 then
+								btn.icon:SetVertexColor(1, 0.3, 0.3)
+							end
 						end
 					end
 				end
