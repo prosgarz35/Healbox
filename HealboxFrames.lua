@@ -66,9 +66,7 @@ local function InitialConfigFunction(self)
 	Healbox.activeFrames[self] = true
 	
 	-- Initialize the layout
-	if not InCombatLockdown() then
-		Healbox:UpdateButtons()
-	end
+	Healbox:UpdateButtons()
 end
 
 local function SetupHeader(header, groupFilter, isParty)
@@ -82,6 +80,7 @@ local function SetupHeader(header, groupFilter, isParty)
 	if isParty then
 		header:SetAttribute("showParty", true)
 		header:SetAttribute("showSolo", true)
+		header:SetAttribute("showRaid", true)
 	else
 		header:SetAttribute("showRaid", true)
 		header:SetAttribute("groupFilter", tostring(groupFilter))
@@ -213,10 +212,8 @@ function Healbox:OnUnitFrameShow(frame)
 		if self.UpdateUnitDebuffs then self:UpdateUnitDebuffs(frame, unit) end
 	end
 	
-	if not InCombatLockdown() then
-		self:UpdateManaBarVisibility()
-		self:UpdateButtons()
-	end
+	self:UpdateManaBarVisibility()
+	self:UpdateButtons()
 end
 
 function Healbox:OnUnitFrameHide(frame)
@@ -246,6 +243,8 @@ function Healbox:OnUnitFrameAttributeChanged(frame, name, value)
 			
 			self:UpdateUnitHealth(frame, value)
 			self:UpdateUnitMana(frame, value)
+			if Healbox.UpdateUnitBuffs then Healbox:UpdateUnitBuffs(frame, value) end
+			if Healbox.UpdateUnitDebuffs then Healbox:UpdateUnitDebuffs(frame, value) end
 		else
 			frame.TargetUnit = nil
 		end
