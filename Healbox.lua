@@ -241,35 +241,34 @@ function Healbox:OnInitialize()
 	local options = {
 		name = "Healbox", type = "group", handler = Healbox,
 		args = {
-			-- Блок 1: Основные настройки (кнопки и масштаб)
+			-- Блок 1: Основные настройки (кнопки и масштаб). width = 1.5 делит строку поровну на 2.
 			generalHeader = { type = "header", name = "General Settings", order = 1 },
-			buttonCount = { type = "range", name = "Number of Buttons", width = "normal", min = 1, max = 15, step = 1, get = "GetButtonCount", set = "SetButtonCount", order = 2 },
-			scale = { type = "range", name = "Scale", width = "normal", min = 0.5, max = 2.0, step = 0.05,
+			buttonCount = { type = "range", name = "Number of Buttons", width = 1.5, min = 1, max = 15, step = 1, get = "GetButtonCount", set = "SetButtonCount", order = 2 },
+			scale = { type = "range", name = "Scale", width = 1.5, min = 0.5, max = 2.0, step = 0.05,
 				get = function() return self.db.profile.scale end,
 				set = function(_, val) self.db.profile.scale = val; self:UpdateScale() end, order = 3 },
 			
-			-- Блок 2: Группы (2 горизонтальные линии)
+			-- Блок 2: Группы (4 чекбокса в ряд)
 			groupsHeader = { type = "header", name = "Raid Groups", order = 10 },
 			-- Кнопки групп добавляются циклом ниже с order от 11 до 18
 
-			-- Блок 3: Видимость (остальные 4 пункта в одну линию)
+			-- Блок 3: Видимость. width = 1.5 расставит их в сетку 2x2.
 			visibilityHeader = { type = "header", name = "Visibility Options", order = 20 },
-			showParty = { type = "toggle", name = "Show Party", width = 0.75,
+			showParty = { type = "toggle", name = "Show Party", width = 1.5,
 				get = function() return self.db.profile.showParty end,
 				set = function(_, val) self.db.profile.showParty = val; self:UpdateVisibility() end, order = 21 },
-			showMana = { type = "toggle", name = "Show Main Resource", width = 0.75,
+			showMana = { type = "toggle", name = "Show Main Resource", width = 1.5,
 				set = function(_, val) self.db.profile.showMana = val; self:UpdateManaBarVisibility() end,
 				get = function() return self.db.profile.showMana end, order = 22 },
-			showHealthText = { type = "toggle", name = "Show Health Percent", width = 0.75,
+			showHealthText = { type = "toggle", name = "Show Health Percent", width = 1.5,
 				set = function(_, val) self.db.profile.showHealthText = val; self:RefreshAllFrames() end,
 				get = function() return self.db.profile.showHealthText end, order = 23 },
-			showNameText = { type = "toggle", name = "Show Names", width = 0.75,
+			showNameText = { type = "toggle", name = "Show Names", width = 1.5,
 				set = function(_, val) self.db.profile.showNameText = val; self:RefreshAllFrames() end,
 				get = function() return self.db.profile.showNameText end, order = 24 },
 		}
 	}
 	
-	-- Добавляем чекбоксы групп. width = 0.75 позволяет уместить ровно 4 группы в одной строке
 	for i = 1, 8 do
 		options.args["showGroup"..i] = {
 			type = "toggle", name = "Show Group "..i, width = 0.75,
@@ -294,6 +293,10 @@ function Healbox:OnEnable()
 	self:RegisterEvent("UNIT_AURA")
 	self:RegisterEvent("SPELLS_CHANGED", "UpdateSpells")
 	self:RegisterEvent("PLAYER_REGEN_ENABLED")
+	
+	-- События для фикса бага с пропадающим соло-фреймом при выходе из группы
+	self:RegisterEvent("PARTY_MEMBERS_CHANGED", "UpdateRoster")
+	self:RegisterEvent("RAID_ROSTER_UPDATE", "UpdateRoster")
 	
 	self.activeSpellsHash = {}
 	self.unitFrames = {}
@@ -331,10 +334,27 @@ function Healbox:UNIT_AURA(_, unit)
 	end
 end
 
+-- Фикс бага: принудительное обновление видимости соло-фрейма при изменениях в группе
+function Healbox:UpdateRoster()
+	if InCombatLockdown() then
+		self.pendingRosterUpdate = true
+		return
+	end
+	
+	if self.db.profile.showParty and self.partyContainer and self.partyContainer.header then
+		self.partyContainer.header:Hide()
+		self.partyContainer.header:Show()
+	end
+end
+
 function Healbox:PLAYER_REGEN_ENABLED()
 	if self.pendingButtonUpdate then
 		self.pendingButtonUpdate = false
 		self:UpdateButtons()
+	end
+	if self.pendingRosterUpdate then
+		self.pendingRosterUpdate = false
+		self:UpdateRoster()
 	end
 end
 
