@@ -1,12 +1,10 @@
 local Healbox = LibStub("AceAddon-3.0"):NewAddon("Healbox", "AceConsole-3.0", "AceEvent-3.0", "AceTimer-3.0")
 
--- Кэширование стандартных функций WoW API & Lua 5.1
 local wipe, unpack, pairs, ipairs, math_max, math_floor, tostring = wipe, unpack, pairs, ipairs, math.max, math.floor, tostring
 local CreateFrame, UIParent, GameTooltip = CreateFrame, UIParent, GameTooltip
 local IsUsableSpell, IsSpellInRange = IsUsableSpell, IsSpellInRange
 local UnitIsVisible, UnitIsDeadOrGhost, UnitExists, UnitName = UnitIsVisible, UnitIsDeadOrGhost, UnitExists, UnitName
-local UnitHealth, UnitHealthMax = UnitHealth, UnitHealthMax
-local UnitPower, UnitPowerMax, UnitPowerType = UnitPower, UnitPowerMax, UnitPowerType
+local UnitHealth, UnitHealthMax, UnitPower, UnitPowerMax, UnitPowerType = UnitHealth, UnitHealthMax, UnitPower, UnitPowerMax, UnitPowerType
 local UnitBuff, UnitDebuff = UnitBuff, UnitDebuff
 local GetSpellInfo, GetSpellLink, GetCursorInfo, GetMacroSpell = GetSpellInfo, GetSpellLink, GetCursorInfo, GetMacroSpell
 local IsPassiveSpell, PickupSpell, ClearCursor, InCombatLockdown = IsPassiveSpell, PickupSpell, ClearCursor, InCombatLockdown
@@ -31,24 +29,19 @@ local SPELL_LIST = {
 
 local DEBUFF_PRIORITY = { Curse = 1, Disease = 2, Magic = 3, Poison = 4 }
 local DEBUFF_COLOR = {
-	Magic   = { 0.20, 0.60, 1.00 },
-	Curse   = { 0.60, 0.00, 1.00 },
-	Disease = { 0.60, 0.40, 0.00 },
-	Poison  = { 0.00, 0.60, 0.00 }
+	Magic   = { 0.20, 0.60, 1.00 }, Curse   = { 0.60, 0.00, 1.00 },
+	Disease = { 0.60, 0.40, 0.00 }, Poison  = { 0.00, 0.60, 0.00 }
 }
-
--- Статичная таблица Backdrop для предотвращения генерации мусора в памяти
 local BACKDROP_TPL = {
 	bgFile = "Interface/Tooltips/UI-Tooltip-Background", edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
 	tile = true, tileSize = 8, edgeSize = 8, insets = { left = 2, right = 2, top = 2, bottom = 2 }
 }
 
--- ==========================================
--- UI Factory Helpers
--- ==========================================
+local usableCache, manaCache = {}, {}
+
 local function CreateBar(parent, name, height, color, anchor)
 	local bar = CreateFrame("StatusBar", parent:GetName()..name, parent)
-	bar:SetWidth(116); bar:SetHeight(height)
+	bar:SetSize(116, height)
 	bar:SetPoint("TOPLEFT", anchor or parent, anchor and "BOTTOMLEFT" or "TOPLEFT", anchor and 0 or 2, anchor and 0 or -2)
 	bar:SetStatusBarTexture("Interface/TargetingFrame/UI-StatusBar")
 	bar:SetStatusBarColor(unpack(color))
@@ -57,7 +50,7 @@ end
 
 local function CreateBuffFrame(parent, index)
 	local buff = CreateFrame("Frame", parent:GetName().."_Buff"..index, parent)
-	buff:SetWidth(20); buff:SetHeight(20)
+	buff:SetSize(20, 20)
 	buff:SetPoint("RIGHT", index == 1 and parent or parent["buff"..(index-1)], "LEFT", -2, 0)
 	
 	buff.icon = buff:CreateTexture(nil, "ARTWORK")
@@ -77,7 +70,7 @@ end
 
 local function CreateSpellButton(parent, index)
 	local btn = CreateFrame("Button", parent:GetName().."_Spell"..index, parent, "SecureActionButtonTemplate")
-	btn:SetWidth(28); btn:SetHeight(28)
+	btn:SetSize(28, 28)
 	btn.index = index
 	btn:SetPoint("LEFT", parent, "RIGHT", 4 + (index - 1) * 32, 0)
 	
@@ -95,7 +88,7 @@ local function CreateSpellButton(parent, index)
 	btn.debuffHighlight:SetTexture("Interface/Buttons/UI-ActionButton-Border")
 	btn.debuffHighlight:SetBlendMode("ADD")
 	btn.debuffHighlight:SetPoint("CENTER")
-	btn.debuffHighlight:SetWidth(42); btn.debuffHighlight:SetHeight(42)
+	btn.debuffHighlight:SetSize(42, 42)
 	btn.debuffHighlight:Hide()
 	
 	btn:SetScript("OnEnter", function(s) Healbox:OnSpellButtonEnter(s) end)
@@ -107,7 +100,7 @@ local function CreateSpellButton(parent, index)
 end
 
 local function InitialConfigFunction(self)
-	self:SetWidth(120); self:SetHeight(32)
+	self:SetSize(120, 32)
 	self:SetBackdrop(BACKDROP_TPL)
 	self:SetBackdropColor(0, 0, 0, 0.8)
 	self:RegisterForClicks("AnyUp")
@@ -149,7 +142,7 @@ function Healbox:CreateGroupHeaders()
 	
 	local function CreateContainer(name, titleText, relativeTo, isGroup)
 		local container = CreateFrame("Frame", name.."Container", UIParent)
-		container:SetWidth(120); container:SetHeight(16)
+		container:SetSize(120, 16)
 		container:EnableMouse(true)
 		container:SetMovable(true)
 		container:SetClampedToScreen(true)
@@ -187,11 +180,7 @@ function Healbox:CreateGroupHeaders()
 		local pos = self.profile.positions[name]
 		container:SetPoint(pos and pos.point or "TOPLEFT", pos and UIParent or relativeTo, pos and pos.relativePoint or (isGroup and "BOTTOMLEFT" or "TOPLEFT"), pos and pos.x or (isGroup and 0 or 100), pos and pos.y or (isGroup and -20 or -200))
 		
-		if (not isGroup and self.profile.showParty) or (isGroup and self.profile.showGroups[isGroup]) then
-			header:Show()
-		else
-			header:Hide()
-		end
+		if (not isGroup and self.profile.showParty) or (isGroup and self.profile.showGroups[isGroup]) then header:Show() else header:Hide() end
 
 		container.header, container.isGroup = header, isGroup
 		table.insert(self.containers, container)
@@ -203,39 +192,18 @@ function Healbox:CreateGroupHeaders()
 	for i = 1, 8 do lastContainer = CreateContainer("HealboxGroupHeader"..i, "Group "..i, lastContainer, i) end
 end
 
--- ==========================================
--- Core
--- ==========================================
 function Healbox:OnInitialize()
 	self.db = LibStub("AceDB-3.0"):New("HealboxCharacterDB", defaults)
 	self.profile = self.db.profile
 	
 	local options = {
-		name = "Settings",
-		type = "group", handler = Healbox,
+		name = "Settings", type = "group", handler = Healbox,
 		get = function(info) return self.profile[info[#info]] end,
 		set = function(info, val) self.profile[info[#info]] = val; self:RefreshAllFrames() end,
 		args = {
-			buttonCount = { 
-				type = "range", name = "Number of Buttons", width = "full", 
-				min = 1, max = 15, step = 1, 
-				set = function(_, val) self.profile.buttonCount = val; self:UpdateButtons() end, order = 1 
-			},
-			scale = { 
-				type = "range", name = "Scale", width = "full", 
-				min = 0.5, max = 2.0, step = 0.05, 
-				set = function(_, val) self.profile.scale = val; self:UpdateScale() end, order = 2 
-			},
+			buttonCount = { type = "range", name = "Number of Buttons", width = "full", min = 1, max = 15, step = 1, set = function(_, val) self.profile.buttonCount = val; self:UpdateButtons() end, order = 1 },
+			scale = { type = "range", name = "Scale", width = "full", min = 0.5, max = 2.0, step = 0.05, set = function(_, val) self.profile.scale = val; self:UpdateScale() end, order = 2 },
 			groupsHeader = { type = "header", name = "Raid Groups", order = 10 },
-			showGroup1 = { type = "toggle", name = "Group 1", width = "half", get = function() return self.profile.showGroups[1] end, set = function(_, val) self.profile.showGroups[1] = val; self:UpdateVisibility() end, order = 11 },
-			showGroup2 = { type = "toggle", name = "Group 2", width = "half", get = function() return self.profile.showGroups[2] end, set = function(_, val) self.profile.showGroups[2] = val; self:UpdateVisibility() end, order = 12 },
-			showGroup3 = { type = "toggle", name = "Group 3", width = "half", get = function() return self.profile.showGroups[3] end, set = function(_, val) self.profile.showGroups[3] = val; self:UpdateVisibility() end, order = 13 },
-			showGroup4 = { type = "toggle", name = "Group 4", width = "half", get = function() return self.profile.showGroups[4] end, set = function(_, val) self.profile.showGroups[4] = val; self:UpdateVisibility() end, order = 14 },
-			showGroup5 = { type = "toggle", name = "Group 5", width = "half", get = function() return self.profile.showGroups[5] end, set = function(_, val) self.profile.showGroups[5] = val; self:UpdateVisibility() end, order = 15 },
-			showGroup6 = { type = "toggle", name = "Group 6", width = "half", get = function() return self.profile.showGroups[6] end, set = function(_, val) self.profile.showGroups[6] = val; self:UpdateVisibility() end, order = 16 },
-			showGroup7 = { type = "toggle", name = "Group 7", width = "half", get = function() return self.profile.showGroups[7] end, set = function(_, val) self.profile.showGroups[7] = val; self:UpdateVisibility() end, order = 17 },
-			showGroup8 = { type = "toggle", name = "Group 8", width = "half", get = function() return self.profile.showGroups[8] end, set = function(_, val) self.profile.showGroups[8] = val; self:UpdateVisibility() end, order = 18 },
-
 			visibilityHeader = { type = "header", name = "Visibility Options", order = 20 },
 			showParty = { type = "toggle", name = "Show Party", width = "normal", set = function(_, val) self.profile.showParty = val; self:UpdateVisibility() end, order = 21 },
 			showNameText = { type = "toggle", name = "Show Names", width = "normal", order = 22 },
@@ -243,6 +211,15 @@ function Healbox:OnInitialize()
 			showHealthText = { type = "toggle", name = "Show Health Percent", width = "normal", order = 24 },
 		}
 	}
+
+	for i = 1, 8 do
+		options.args["showGroup"..i] = {
+			type = "toggle", name = "Group "..i, width = "half",
+			get = function() return self.profile.showGroups[i] end,
+			set = function(_, val) self.profile.showGroups[i] = val; self:UpdateVisibility() end,
+			order = 10 + i
+		}
+	end
 
 	LibStub("AceConfig-3.0"):RegisterOptionsTable("Healbox", options)
 	self.optionsFrame = LibStub("AceConfigDialog-3.0"):AddToBlizOptions("Healbox", "Healbox")
@@ -254,11 +231,9 @@ function Healbox:OnEnable()
 	self:RegisterEvent("UNIT_HEALTH", "OnUnitEvent")
 	self:RegisterEvent("UNIT_MAXHEALTH", "OnUnitEvent")
 	self:RegisterEvent("UNIT_AURA", "OnUnitEvent")
-	
-	for _, ev in ipairs({"UNIT_MANA", "UNIT_RAGE", "UNIT_FOCUS", "UNIT_ENERGY", "UNIT_RUNIC_POWER", "UNIT_DISPLAYPOWER", "UNIT_MAXMANA"}) do 
-		self:RegisterEvent(ev, "OnUnitEvent") 
-	end
-	
+	self:RegisterEvent("UNIT_POWER", "OnUnitEvent")
+	self:RegisterEvent("UNIT_MAXPOWER", "OnUnitEvent")
+	self:RegisterEvent("UNIT_DISPLAYPOWER", "OnUnitEvent")
 	self:RegisterEvent("SPELLS_CHANGED", "UpdateSpells")
 	self:RegisterEvent("PLAYER_REGEN_ENABLED")
 	self:RegisterEvent("PARTY_MEMBERS_CHANGED", "UpdateRoster")
@@ -386,6 +361,16 @@ function Healbox:OnUpdateTimer()
 	local count = self.profile.buttonCount or 5
 	local spells = self.profile.spells
 	
+	wipe(usableCache)
+	wipe(manaCache)
+
+	for i = 1, count do
+		local spellName = spells[i]
+		if spellName and spellName ~= "" then
+			usableCache[spellName], manaCache[spellName] = IsUsableSpell(spellName)
+		end
+	end
+
 	for frame in pairs(self.activeFrames) do
 		local unit = frame.TargetUnit
 		if frame:IsVisible() and unit and UnitIsVisible(unit) and not UnitIsDeadOrGhost(unit) then
@@ -393,7 +378,7 @@ function Healbox:OnUpdateTimer()
 				local btn = frame.spellButtons[i]
 				local spellName = spells[i]
 				if spellName and spellName ~= "" then
-					local isUsable, notEnoughMana = IsUsableSpell(spellName)
+					local isUsable, notEnoughMana = usableCache[spellName], manaCache[spellName]
 					local inRange = IsSpellInRange(spellName, unit)
 					
 					if (isUsable or notEnoughMana) and inRange == 0 then
@@ -450,7 +435,6 @@ function Healbox:UpdateUnitMana(frame, unit)
 	frame.manaBar:SetValue(UnitIsDeadOrGhost(unit) and 0 or UnitPower(unit))
 	
 	local pType, pToken = UnitPowerType(unit)
-	-- Используем стандартную глобальную таблицу PowerBarColor для WoW 3.3.5
 	local info = PowerBarColor[pToken] or PowerBarColor[pType]
 	if info then 
 		frame.manaBar:SetStatusBarColor(info.r, info.g, info.b) 
@@ -533,9 +517,6 @@ function Healbox:UpdateUnitDebuffs(frame, unit)
 	end
 end
 
--- ==========================================
--- UI Event Handlers
--- ==========================================
 function Healbox:OnSpellButtonEnter(btn)
 	if not self.profile.showTooltips then return end
 	local spellName = self.profile.spells[btn.index]
@@ -560,7 +541,6 @@ function Healbox:OnSpellButtonReceiveDrag(btn)
 	
 	if infoType == "spell" then
 		if IsPassiveSpell(index, bookType) then print("|cFFFF0000Healbox:|r Cannot assign passive spells."); return end
-		-- ИСПРАВЛЕНО: GetSpellName заменен на совместимый GetSpellInfo для 3.3.5
 		local sName = GetSpellInfo(index, bookType)
 		if sName then spellName, _, icon = GetSpellInfo(sName) end
 	elseif infoType == "macro" then
