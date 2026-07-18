@@ -227,20 +227,20 @@ function Healbox:OnInitialize()
 				set = function(_, val) self.profile.scale = val; self:UpdateScale() end, order = 2 
 			},
 			groupsHeader = { type = "header", name = "Raid Groups", order = 10 },
-			showGroup1 = { type = "toggle", name = "Group 1", width = 0.875, get = function() return self.profile.showGroups[1] end, set = function(_, val) self.profile.showGroups[1] = val; self:UpdateVisibility() end, order = 11 },
-			showGroup2 = { type = "toggle", name = "Group 2", width = 0.875, get = function() return self.profile.showGroups[2] end, set = function(_, val) self.profile.showGroups[2] = val; self:UpdateVisibility() end, order = 12 },
-			showGroup3 = { type = "toggle", name = "Group 3", width = 0.875, get = function() return self.profile.showGroups[3] end, set = function(_, val) self.profile.showGroups[3] = val; self:UpdateVisibility() end, order = 13 },
-			showGroup4 = { type = "toggle", name = "Group 4", width = 0.875, get = function() return self.profile.showGroups[4] end, set = function(_, val) self.profile.showGroups[4] = val; self:UpdateVisibility() end, order = 14 },
-			showGroup5 = { type = "toggle", name = "Group 5", width = 0.875, get = function() return self.profile.showGroups[5] end, set = function(_, val) self.profile.showGroups[5] = val; self:UpdateVisibility() end, order = 15 },
-			showGroup6 = { type = "toggle", name = "Group 6", width = 0.875, get = function() return self.profile.showGroups[6] end, set = function(_, val) self.profile.showGroups[6] = val; self:UpdateVisibility() end, order = 16 },
-			showGroup7 = { type = "toggle", name = "Group 7", width = 0.875, get = function() return self.profile.showGroups[7] end, set = function(_, val) self.profile.showGroups[7] = val; self:UpdateVisibility() end, order = 17 },
-			showGroup8 = { type = "toggle", name = "Group 8", width = 0.875, get = function() return self.profile.showGroups[8] end, set = function(_, val) self.profile.showGroups[8] = val; self:UpdateVisibility() end, order = 18 },
+			showGroup1 = { type = "toggle", name = "Group 1", width = "half", get = function() return self.profile.showGroups[1] end, set = function(_, val) self.profile.showGroups[1] = val; self:UpdateVisibility() end, order = 11 },
+			showGroup2 = { type = "toggle", name = "Group 2", width = "half", get = function() return self.profile.showGroups[2] end, set = function(_, val) self.profile.showGroups[2] = val; self:UpdateVisibility() end, order = 12 },
+			showGroup3 = { type = "toggle", name = "Group 3", width = "half", get = function() return self.profile.showGroups[3] end, set = function(_, val) self.profile.showGroups[3] = val; self:UpdateVisibility() end, order = 13 },
+			showGroup4 = { type = "toggle", name = "Group 4", width = "half", get = function() return self.profile.showGroups[4] end, set = function(_, val) self.profile.showGroups[4] = val; self:UpdateVisibility() end, order = 14 },
+			showGroup5 = { type = "toggle", name = "Group 5", width = "half", get = function() return self.profile.showGroups[5] end, set = function(_, val) self.profile.showGroups[5] = val; self:UpdateVisibility() end, order = 15 },
+			showGroup6 = { type = "toggle", name = "Group 6", width = "half", get = function() return self.profile.showGroups[6] end, set = function(_, val) self.profile.showGroups[6] = val; self:UpdateVisibility() end, order = 16 },
+			showGroup7 = { type = "toggle", name = "Group 7", width = "half", get = function() return self.profile.showGroups[7] end, set = function(_, val) self.profile.showGroups[7] = val; self:UpdateVisibility() end, order = 17 },
+			showGroup8 = { type = "toggle", name = "Group 8", width = "half", get = function() return self.profile.showGroups[8] end, set = function(_, val) self.profile.showGroups[8] = val; self:UpdateVisibility() end, order = 18 },
 
 			visibilityHeader = { type = "header", name = "Visibility Options", order = 20 },
-			showParty = { type = "toggle", name = "Show Party", width = 1.75, set = function(_, val) self.profile.showParty = val; self:UpdateVisibility() end, order = 21 },
-			showNameText = { type = "toggle", name = "Show Names", width = 1.75, order = 22 },
-			showMana = { type = "toggle", name = "Show Main Resource", width = 1.75, set = function(_, val) self.profile.showMana = val; self:UpdateManaBarVisibility() end, order = 23 },
-			showHealthText = { type = "toggle", name = "Show Health Percent", width = 1.75, order = 24 },
+			showParty = { type = "toggle", name = "Show Party", width = "normal", set = function(_, val) self.profile.showParty = val; self:UpdateVisibility() end, order = 21 },
+			showNameText = { type = "toggle", name = "Show Names", width = "normal", order = 22 },
+			showMana = { type = "toggle", name = "Show Main Resource", width = "normal", set = function(_, val) self.profile.showMana = val; self:UpdateManaBarVisibility() end, order = 23 },
+			showHealthText = { type = "toggle", name = "Show Health Percent", width = "normal", order = 24 },
 		}
 	}
 
