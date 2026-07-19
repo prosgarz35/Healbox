@@ -373,22 +373,24 @@ function Healbox:OnUpdateTimer()
 
 	for frame in pairs(self.activeFrames) do
 		local unit = frame.TargetUnit
-		if frame:IsVisible() and unit and UnitIsVisible(unit) and not UnitIsDeadOrGhost(unit) then
-			for i = 1, count do
-				local btn = frame.spellButtons[i]
-				local spellName = spells[i]
-				if spellName and spellName ~= "" then
-					local isUsable, notEnoughMana = usableCache[spellName], manaCache[spellName]
-					local inRange = IsSpellInRange(spellName, unit)
-					
-					if (isUsable or notEnoughMana) and inRange == 0 then
-						btn.icon:SetVertexColor(1, 0.3, 0.3)
-					elseif isUsable then
-						btn.icon:SetVertexColor(1, 1, 1)
-					elseif notEnoughMana then
-						btn.icon:SetVertexColor(0.5, 0.5, 1)
-					else
-						btn.icon:SetVertexColor(0.3, 0.3, 0.3)
+		if unit ~= nil then
+			if UnitIsVisible(unit) and not UnitIsDeadOrGhost(unit) then
+				for i = 1, count do
+					local btn = frame.spellButtons[i]
+					local spellName = spells[i]
+					if spellName and spellName ~= "" then
+						local isUsable, notEnoughMana = usableCache[spellName], manaCache[spellName]
+						local inRange = IsSpellInRange(spellName, unit)
+						
+						if (isUsable or notEnoughMana) and inRange == 0 then
+							btn.icon:SetVertexColor(1, 0.3, 0.3)
+						elseif isUsable then
+							btn.icon:SetVertexColor(1, 1, 1)
+						elseif notEnoughMana then
+							btn.icon:SetVertexColor(0.5, 0.5, 1)
+						else
+							btn.icon:SetVertexColor(0.3, 0.3, 0.3)
+						end
 					end
 				end
 			end
@@ -417,16 +419,25 @@ end
 function Healbox:UpdateUnitHealth(frame, unit)
 	if not UnitExists(unit) then return end
 	local maxHp = math_max(1, UnitHealthMax(unit))
-	local hp = UnitIsDeadOrGhost(unit) and 0 or UnitHealth(unit)
+	local isDead = UnitIsDeadOrGhost(unit)
+	local hp = isDead and 0 or UnitHealth(unit)
 	local percent = hp / maxHp
 	
 	frame.healthBar:SetMinMaxValues(0, maxHp)
 	frame.healthBar:SetValue(hp)
-	frame.healthBar.hpText:SetText(self.profile.showHealthText and (hp == 0 and "Dead" or math_floor(percent * 100) .. "%") or "")
+	frame.healthBar.hpText:SetText(self.profile.showHealthText and (isDead and "Dead" or math_floor(percent * 100) .. "%") or "")
 	
-	if percent < 0.3 then frame.healthBar:SetStatusBarColor(1, 0, 0)
-	elseif percent < 0.6 then frame.healthBar:SetStatusBarColor(1, 0.9, 0)
-	else frame.healthBar:SetStatusBarColor(0, 1, 0) end
+	if isDead then
+		frame.healthBar:SetStatusBarColor(0.5, 0.5, 0.5)
+	else
+		if percent < 0.3 then 
+			frame.healthBar:SetStatusBarColor(1, 0, 0)
+		elseif percent < 0.6 then 
+			frame.healthBar:SetStatusBarColor(1, 0.9, 0)
+		else 
+			frame.healthBar:SetStatusBarColor(0, 1, 0) 
+		end
+	end
 end
 
 function Healbox:UpdateUnitMana(frame, unit)
@@ -545,17 +556,25 @@ function Healbox:OnSpellButtonReceiveDrag(btn)
 		if sName then spellName, _, icon = GetSpellInfo(sName) end
 	elseif infoType == "macro" then
 		spellName = GetMacroSpell(index)
-		if spellName then _, _, icon = GetSpellInfo(spellName)
-		else print("|cFFFF0000Healbox:|r This macro does not cast a recognized spell."); return end
-	else return end
+		if spellName then 
+			_, _, icon = GetSpellInfo(spellName)
+		else 
+			print("|cFFFF0000Healbox:|r This macro does not cast a recognized spell.")
+			return 
+		end
+	else 
+		return 
+	end
 
-	if spellName then
-		local oldSpell = self.profile.spells[btn.index]
-		self.profile.spells[btn.index] = spellName
-		self.profile.icons[btn.index] = icon
-		self:UpdateSpells()
-		ClearCursor()
-		if IsShiftKeyDown() and oldSpell then PickupSpell(oldSpell) end
+	local oldSpell = self.profile.spells[btn.index]
+	
+	self.profile.spells[btn.index] = spellName
+	self.profile.icons[btn.index] = icon
+	self:UpdateSpells()
+	ClearCursor()
+	
+	if IsShiftKeyDown() and oldSpell ~= nil then 
+		PickupSpell(oldSpell) 
 	end
 end
 
@@ -587,7 +606,9 @@ function Healbox:OnUnitFrameEvent(frame, action, value)
 		frame.TargetUnit = nil
 	elseif action == "UPDATE_UNIT" then
 		if frame.TargetUnit and self.unitFrames[frame.TargetUnit] then self.unitFrames[frame.TargetUnit][frame] = nil end
-		if value and frame:IsVisible() then
+		
+		local hasValue = not not value
+		if hasValue then
 			frame.TargetUnit = value
 			self.unitFrames[value] = self.unitFrames[value] or {}
 			self.unitFrames[value][frame] = true
