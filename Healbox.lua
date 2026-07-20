@@ -1,73 +1,121 @@
+---@diagnostic disable: unnecessary-if, assign-type-mismatch, param-type-mismatch
 ---@type string, any
 local addonName, addonTable = ...
+
+---@class HealboxDB
+---@field buttonCount integer
+---@field scale number
+---@field spells table<integer, string|nil>
+---@field icons table<integer, string|nil>
+---@field positions table<string, any>
+
+---@class Healbox
+---@field activeFrames table<any, boolean>
+---@field unitFrames table<string, table<any, boolean>>
+---@field activeSpellsHash table<string, boolean>
+---@field canCure table<string, boolean>
+---@field pendingButtonUpdate boolean
+---@field pendingRosterUpdate boolean
+---@field partyContainer any
 local Healbox = {}
 
----@type table<any, any>
+local MAX_BUTTONS = 15
+
 Healbox.activeFrames = {}
----@type table<any, any>
 Healbox.unitFrames = {}
----@type table<any, any>
 Healbox.activeSpellsHash = {}
----@type table<any, any>
 Healbox.canCure = { Curse = false, Disease = false, Magic = false, Poison = false }
----@type any
 Healbox.pendingButtonUpdate = false
----@type any
 Healbox.pendingRosterUpdate = false
 
 local _G = _G
-local wipe, unpack, pairs, ipairs = wipe, unpack, pairs, ipairs
+local wipe, unpack, pairs, ipairs, type = wipe, unpack, pairs, ipairs, type
 local math_max, math_floor = math.max, math.floor
-local CreateFrame, UIParent, GameTooltip = CreateFrame, UIParent, GameTooltip
-local IsUsableSpell, IsSpellInRange = IsUsableSpell, IsSpellInRange
-local UnitIsVisible, UnitIsDeadOrGhost, UnitExists, UnitName = UnitIsVisible, UnitIsDeadOrGhost, UnitExists, UnitName
-local UnitHealth, UnitHealthMax, UnitPower, UnitPowerMax, UnitPowerType = UnitHealth, UnitHealthMax, UnitPower, UnitPowerMax, UnitPowerType
-local UnitBuff, UnitDebuff = UnitBuff, UnitDebuff
-local PickupSpell, ClearCursor, InCombatLockdown, IsShiftKeyDown = PickupSpell, ClearCursor, InCombatLockdown, IsShiftKeyDown
+local string_format = string.format
 
----@type any
-local GetSpellInfo = GetSpellInfo
----@type any
-local GetSpellLink = GetSpellLink
----@type any
-local GetCursorInfo = GetCursorInfo
----@type any
-local GetMacroSpell = GetMacroSpell
----@type any
-local IsPassiveSpell = IsPassiveSpell
+local CreateFrame, UIParent, GameTooltip = _G.CreateFrame, _G.UIParent, _G.GameTooltip
+local IsUsableSpell, IsSpellInRange = _G.IsUsableSpell, _G.IsSpellInRange
+local UnitIsVisible, UnitIsDeadOrGhost, UnitExists, UnitName = _G.UnitIsVisible, _G.UnitIsDeadOrGhost, _G.UnitExists, _G.UnitName
+local UnitHealth, UnitHealthMax, UnitPower, UnitPowerMax, UnitPowerType = _G.UnitHealth, _G.UnitHealthMax, _G.UnitPower, _G.UnitPowerMax, _G.UnitPowerType
+local UnitBuff, UnitDebuff = _G.UnitBuff, _G.UnitDebuff
+local PickupSpell, ClearCursor = _G.PickupSpell, _G.ClearCursor
+local PowerBarColor = _G.PowerBarColor
+
+---@type fun(): boolean
+local InCombatLockdown = _G.InCombatLockdown
+
+---@type fun(): boolean
+local IsShiftKeyDown = _G.IsShiftKeyDown
+
+---@type fun(id: integer|string, bookType?: string): string|nil, string|nil, string|nil
+local GetSpellInfo = _G.GetSpellInfo
+
+---@type fun(spellName: string): string|nil
+local GetSpellLink = _G.GetSpellLink
+
+---@type fun(): string|nil, integer|nil, integer|nil
+local GetCursorInfo = _G.GetCursorInfo
+
+---@type fun(index: integer): string|nil
+local GetMacroSpell = _G.GetMacroSpell
+
+---@type fun(index: integer, bookType: string): boolean
+local IsPassiveSpell = _G.IsPassiveSpell
 
 local EventFrame = CreateFrame("Frame")
 
----@type any
+---@type HealboxDB
 local DB = {
 	buttonCount = 5, scale = 1.0,
 	spells = {}, icons = {}, positions = {}
 }
 
----@type any
+---@type table<string, boolean|nil>
+local unitPowerEvents = {
+	UNIT_MANA = true, UNIT_RAGE = true, UNIT_FOCUS = true, UNIT_ENERGY = true, UNIT_RUNIC_POWER = true,
+	UNIT_MAXMANA = true, UNIT_MAXRAGE = true, UNIT_MAXFOCUS = true, UNIT_MAXENERGY = true, UNIT_MAXRUNIC_POWER = true,
+	UNIT_DISPLAYPOWER = true
+}
+
+---@type table<string, table<string, boolean>|nil>
 local CuresByName = {}
+
+---@type { [1]: integer, [2]: table<string, boolean> }[]
 local SPELL_LIST = {
-	{ 2782, { Curse = true } }, { 2893, { Poison = true } }, { 8946, { Poison = true } },
-	{ 552, { Disease = true } }, { 528, { Disease = true } }, { 527, { Magic = true } },
-	{ 526, { Poison = true, Disease = true } }, { 51886, { Poison = true, Disease = true, Curse = true } },
-	{ 1152, { Poison = true, Disease = true } }, { 4987, { Poison = true, Disease = true, Magic = true } },
-	{ 475, { Curse = true } }, { 32375, { Magic = true } },
+	{ 2782, { Curse = true, Magic = true } },
+	{ 2893, { Poison = true } },
+	{ 8946, { Poison = true } },
+	{ 552, { Disease = true } },
+	{ 528, { Disease = true } },
+	{ 527, { Magic = true } },
+	{ 32375, { Magic = true } },
+	{ 526, { Poison = true, Disease = true } },
+	{ 51886, { Poison = true, Disease = true, Curse = true } },
+	{ 523, { Poison = true } },
+	{ 8170, { Disease = true } },
+	{ 1152, { Poison = true, Disease = true } },
+	{ 4987, { Poison = true, Disease = true, Magic = true } },
+	{ 475, { Curse = true } },
 	{ 520869, { Poison = true, Disease = true } }
 }
 
+---@type table<string, integer>
 local DEBUFF_PRIORITY = { Curse = 1, Disease = 2, Magic = 3, Poison = 4 }
+
+---@type table<string, number[]>
 local DEBUFF_COLOR = {
-	Magic   = { 0.20, 0.60, 1.00 }, Curse   = { 0.60, 0.00, 1.00 },
-	Disease = { 0.60, 0.40, 0.00 }, Poison  = { 0.00, 0.60, 0.00 }
+	Magic   = { 0.00, 0.80, 1.00 }, Curse   = { 0.90, 0.00, 1.00 },
+	Disease = { 0.90, 0.50, 0.00 }, Poison  = { 0.00, 1.00, 0.00 }
 }
+
 local BACKDROP_TPL = {
 	bgFile = "Interface/Tooltips/UI-Tooltip-Background", edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
 	tile = true, tileSize = 8, edgeSize = 8, insets = { left = 2, right = 2, top = 2, bottom = 2 }
 }
 
----@type any
+---@type table<string, boolean>
 local usableCache = {}
----@type any
+---@type table<string, boolean>
 local manaCache = {}
 
 local function CreateBar(parent, name, height, color, anchor)
@@ -76,8 +124,8 @@ local function CreateBar(parent, name, height, color, anchor)
 	bar:SetPoint("TOPLEFT", anchor or parent, anchor and "BOTTOMLEFT" or "TOPLEFT", anchor and 0 or 2, anchor and 0 or -2)
 	bar:SetStatusBarTexture("Interface/TargetingFrame/UI-StatusBar")
 	bar:SetStatusBarColor(unpack(color))
-	local text = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	return bar, text
+	bar.text = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	return bar
 end
 
 local function CreateBuffFrame(parent, index)
@@ -143,11 +191,9 @@ local function InitialConfigFunction(self)
 	self:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
 	self:RegisterForClicks("AnyUp")
 
-	local hb, hbName = CreateBar(self, "HealthBar", 24, {0, 1, 0})
-	self.healthBar = hb
-	self.healthBar.name = hbName
-	self.healthBar.name:SetPoint("LEFT", 6, 0)
-	self.healthBar.name:SetJustifyH("LEFT")
+	self.healthBar = CreateBar(self, "HealthBar", 24, {0, 1, 0})
+	self.healthBar.text:SetPoint("LEFT", 6, 0)
+	self.healthBar.text:SetJustifyH("LEFT")
 	
 	self.healthBar.hpText = self.healthBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	self.healthBar.hpText:SetPoint("RIGHT", -6, 0)
@@ -157,16 +203,14 @@ local function InitialConfigFunction(self)
 
 	self.spellButtons = {}
 	for i = 1, 4 do CreateBuffFrame(self, i) end
-	for i = 1, 15 do self.spellButtons[i] = CreateSpellButton(self, i) end
+	for i = 1, MAX_BUTTONS do self.spellButtons[i] = CreateSpellButton(self, i) end
 
 	Healbox.activeFrames[self] = true
 	Healbox:UpdateButtons()
 
-	self:SetScript("OnShow", function(f) Healbox:OnUnitFrameEvent(f, "SHOW") end)
-	self:SetScript("OnHide", function(f) Healbox:OnUnitFrameEvent(f, "HIDE") end)
-	self:SetScript("OnAttributeChanged", function(f, name, value) 
-		if name == "unit" then Healbox:OnUnitFrameEvent(f, "UPDATE_UNIT", value) end 
-	end)
+	self:SetScript("OnShow", function(f) Healbox:OnFrameShow(f) end)
+	self:SetScript("OnHide", function(f) Healbox:OnFrameHide(f) end)
+	self:SetScript("OnAttributeChanged", function(f, name, value) Healbox:OnFrameAttributeChanged(f, name, value) end)
 end
 
 function Healbox:CreatePartyHeader()
@@ -203,10 +247,7 @@ function Healbox:CreatePartyHeader()
 	local pos = DB.positions["Party"]
 	local p, rp, x, y = "TOPLEFT", "TOPLEFT", 100, -200
 	if pos then
-		p = pos.point or p
-		rp = pos.relativePoint or rp
-		x = pos.x or x
-		y = pos.y or y
+		p, rp, x, y = pos.point or p, pos.relativePoint or rp, pos.x or x, pos.y or y
 	end
 	
 	container:SetPoint(p, UIParent, rp, x, y)
@@ -234,8 +275,8 @@ function Healbox:CreateOptionsUI()
 		_G[slider:GetName().."High"]:SetText(maxVal)
 		
 		slider:SetScript("OnValueChanged", function(self, val)
-			if step >= 1 then val = math_floor(val) end
-			label:SetText(text .. ": " .. string.format(formatStr, val))
+			if step >= 1 then val = math_floor(val + 0.5) end
+			label:SetText(text .. ": " .. string_format(formatStr, val))
 			DB[dbKey] = val
 			if updateFunc then updateFunc() end
 		end)
@@ -244,23 +285,27 @@ function Healbox:CreateOptionsUI()
 		return slider
 	end
 
-	CreateSlider("ButtonCount", "Number of Buttons", 1, 15, 1, -60, "%.0f", "buttonCount", function() Healbox:UpdateButtons() end)
+	CreateSlider("ButtonCount", "Number of Buttons", 1, MAX_BUTTONS, 1, -60, "%.0f", "buttonCount", function() Healbox:UpdateButtons() end)
 	CreateSlider("Scale", "Scale", 0.5, 2.0, 0.05, -110, "%.2f", "scale", function() Healbox:UpdateScale() end)
 
 	InterfaceOptions_AddCategory(panel)
 end
 
----@param name string
 function Healbox:ADDON_LOADED(name)
 	if name ~= addonName then return end
 	
-	local db = rawget(_G, "HealboxDB") or {}
-	rawset(_G, "HealboxDB", db)
+	EventFrame:UnregisterEvent("ADDON_LOADED")
+	
+	local savedDB = rawget(_G, "HealboxDB")
+	if type(savedDB) ~= "table" then
+		savedDB = {}
+	end
 	
 	for k, v in pairs(DB) do
-		if db[k] == nil then db[k] = v end
+		if savedDB[k] == nil then savedDB[k] = v end
 	end
-	DB = db
+	DB = savedDB ---@type HealboxDB
+	rawset(_G, "HealboxDB", DB)
 	
 	self:CreateOptionsUI()
 	
@@ -274,6 +319,16 @@ function Healbox:ADDON_LOADED(name)
 end
 
 function Healbox:PLAYER_LOGIN()
+	for _, data in ipairs(SPELL_LIST) do
+		local name = GetSpellInfo(data[1])
+		if name then 
+			if not CuresByName[name] then CuresByName[name] = {} end
+			for k, v in pairs(data[2]) do
+				if v then CuresByName[name][k] = true end
+			end
+		end
+	end
+
 	self:CreatePartyHeader()
 	self:UpdateSpells()
 	self:UpdateScale()
@@ -282,15 +337,12 @@ function Healbox:PLAYER_LOGIN()
 	EventFrame:RegisterEvent("UNIT_MAXHEALTH")
 	EventFrame:RegisterEvent("UNIT_AURA")
 	
-	local powerEvents = { "UNIT_MANA", "UNIT_RAGE", "UNIT_FOCUS", "UNIT_ENERGY", "UNIT_RUNIC_POWER", "UNIT_MAXMANA", "UNIT_MAXRAGE", "UNIT_MAXFOCUS", "UNIT_MAXENERGY", "UNIT_MAXRUNIC_POWER", "UNIT_DISPLAYPOWER" }
-	for _, ev in ipairs(powerEvents) do EventFrame:RegisterEvent(ev) end
+	for ev in pairs(unitPowerEvents) do EventFrame:RegisterEvent(ev) end
 
 	EventFrame:RegisterEvent("PARTY_MEMBERS_CHANGED")
 	EventFrame:RegisterEvent("SPELLS_CHANGED")
 	EventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 end
-
-function Healbox:PARTY_MEMBERS_CHANGED() self:UpdateRoster() end
 
 function Healbox:UpdateRoster()
 	if InCombatLockdown() then
@@ -303,22 +355,8 @@ function Healbox:UpdateRoster()
 	end
 end
 
-function Healbox:UNIT_HEALTH(unit) self:OnUnitEvent("UNIT_HEALTH", unit) end
-function Healbox:UNIT_MAXHEALTH(unit) self:OnUnitEvent("UNIT_MAXHEALTH", unit) end
-function Healbox:UNIT_AURA(unit) self:OnUnitEvent("UNIT_AURA", unit) end
-
-function Healbox:UNIT_MANA(unit) self:OnUnitEvent("UNIT_POWER", unit) end
-function Healbox:UNIT_RAGE(unit) self:OnUnitEvent("UNIT_POWER", unit) end
-function Healbox:UNIT_FOCUS(unit) self:OnUnitEvent("UNIT_POWER", unit) end
-function Healbox:UNIT_ENERGY(unit) self:OnUnitEvent("UNIT_POWER", unit) end
-function Healbox:UNIT_RUNIC_POWER(unit) self:OnUnitEvent("UNIT_POWER", unit) end
-function Healbox:UNIT_MAXMANA(unit) self:OnUnitEvent("UNIT_POWER", unit) end
-function Healbox:UNIT_MAXRAGE(unit) self:OnUnitEvent("UNIT_POWER", unit) end
-function Healbox:UNIT_MAXFOCUS(unit) self:OnUnitEvent("UNIT_POWER", unit) end
-function Healbox:UNIT_MAXENERGY(unit) self:OnUnitEvent("UNIT_POWER", unit) end
-function Healbox:UNIT_MAXRUNIC_POWER(unit) self:OnUnitEvent("UNIT_POWER", unit) end
-function Healbox:UNIT_DISPLAYPOWER(unit) self:OnUnitEvent("UNIT_DISPLAYPOWER", unit) end
-
+---@param event string
+---@param unit string
 function Healbox:OnUnitEvent(event, unit)
 	if not self.unitFrames[unit] then return end
 	local isHealth = (event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH")
@@ -353,28 +391,24 @@ end
 
 function Healbox:UpdateSpells()
 	wipe(self.activeSpellsHash)
-	for _, data in ipairs(SPELL_LIST) do
-		local name = GetSpellInfo(data[1])
-		if name then CuresByName[name] = data[2] end
-	end
+	for k in pairs(self.canCure) do self.canCure[k] = false end
 
 	local count = DB.buttonCount
 	local spells = DB.spells
 	local icons = DB.icons
 	
-	for i = 1, 15 do
+	for i = 1, MAX_BUTTONS do
 		local spellName = spells[i]
-		if spellName and spellName ~= "" then
+		if type(spellName) == "string" and spellName ~= "" then
 			self.activeSpellsHash[spellName] = true
 			if not icons[i] then _, _, icons[i] = GetSpellInfo(spellName) end
-		end
-	end
-	
-	for k in pairs(self.canCure) do self.canCure[k] = false end
-	for i = 1, count do
-		local cure = CuresByName[spells[i] or ""]
-		if cure then 
-			for k, v in pairs(cure) do if v then self.canCure[k] = true end end 
+			
+			if i <= count then
+				local cure = CuresByName[spellName]
+				if cure then 
+					for k, v in pairs(cure) do if v then self.canCure[k] = true end end 
+				end
+			end
 		end
 	end
 	
@@ -392,14 +426,14 @@ function Healbox:UpdateButtons()
 	local icons = DB.icons
 	
 	for frame in pairs(self.activeFrames) do
-		for i = 1, 15 do
+		for i = 1, MAX_BUTTONS do
 			local btn = frame.spellButtons[i]
 			if i <= count then
 				btn:Show()
 				local spell = spells[i]
-				local hasSpell = (spell ~= nil and spell ~= "")
+				local hasSpell = (type(spell) == "string" and spell ~= "")
 				btn:SetAttribute("spell", hasSpell and spell or nil)
-				btn.icon:SetTexture(hasSpell and icons[i] or "Interface/Icons/INV_Misc_QuestionMark")
+				btn.icon:SetTexture((hasSpell and icons[i]) and icons[i] or "Interface/Icons/INV_Misc_QuestionMark")
 				btn.icon:SetVertexColor(hasSpell and 1 or 0.5, hasSpell and 1 or 0.5, hasSpell and 1 or 0.5)
 			else
 				btn:Hide()
@@ -423,17 +457,17 @@ function Healbox:OnUpdateTimer()
 
 	for i = 1, count do
 		local spellName = spells[i]
-		if spellName and spellName ~= "" then
+		if type(spellName) == "string" and spellName ~= "" then
 			usableCache[spellName], manaCache[spellName] = IsUsableSpell(spellName)
 		end
 	end
 
 	for frame in pairs(self.activeFrames) do
 		local unit = frame.TargetUnit
-		if unit and UnitIsVisible(unit) and not UnitIsDeadOrGhost(unit) then
+		if type(unit) == "string" and UnitIsVisible(unit) and not UnitIsDeadOrGhost(unit) then
 			for i = 1, count do
 				local spellName = spells[i]
-				if spellName and spellName ~= "" then
+				if type(spellName) == "string" and spellName ~= "" then
 					local btn = frame.spellButtons[i]
 					local isUsable, notEnoughMana = usableCache[spellName], manaCache[spellName]
 					local inRange = IsSpellInRange(spellName, unit)
@@ -453,15 +487,19 @@ function Healbox:OnUpdateTimer()
 	end
 end
 
+---@param frame any
+---@param unit string
 function Healbox:RefreshFrameData(frame, unit)
 	if not unit then return end
-	frame.healthBar.name:SetText(UnitName(unit) or "Unknown")
+	frame.healthBar.text:SetText(UnitName(unit) or "Unknown")
 	self:UpdateUnitHealth(frame, unit)
 	self:UpdateUnitMana(frame, unit)
 	self:UpdateUnitBuffs(frame, unit)
 	self:UpdateUnitDebuffs(frame, unit)
 end
 
+---@param frame any
+---@param unit string
 function Healbox:UpdateUnitHealth(frame, unit)
 	if not UnitExists(unit) then return end
 	local maxHp = math_max(1, UnitHealthMax(unit))
@@ -475,9 +513,10 @@ function Healbox:UpdateUnitHealth(frame, unit)
 	
 	if isDead then
 		frame.healthBar:SetStatusBarColor(0.5, 0.5, 0.5)
-	elseif frame.hasDebuffColor then
+	elseif type(frame.hasDebuffColor) == "table" then
 		local c = frame.hasDebuffColor
-		frame.healthBar:SetStatusBarColor(c[1], c[2], c[3])
+		local r, g, b = c[1] or 1, c[2] or 1, c[3] or 1
+		frame.healthBar:SetStatusBarColor(r, g, b)
 	elseif percent < 0.3 then 
 		frame.healthBar:SetStatusBarColor(1, 0, 0)
 	elseif percent < 0.6 then 
@@ -487,16 +526,23 @@ function Healbox:UpdateUnitHealth(frame, unit)
 	end
 end
 
+---@param frame any
+---@param unit string
 function Healbox:UpdateUnitMana(frame, unit)
 	if not UnitExists(unit) then return end
 	frame.manaBar:SetMinMaxValues(0, math_max(1, UnitPowerMax(unit)))
 	frame.manaBar:SetValue(UnitIsDeadOrGhost(unit) and 0 or UnitPower(unit))
 	
-	local pType = UnitPowerType(unit)
-	local info = PowerBarColor[pType]
-	if info then frame.manaBar:SetStatusBarColor(info.r, info.g, info.b) end
+	local pType, pToken = UnitPowerType(unit)
+	local info = PowerBarColor[pToken] or PowerBarColor[pType]
+	if type(info) == "table" then 
+		local r, g, b = info.r or 0, info.g or 0, info.b or 1
+		frame.manaBar:SetStatusBarColor(r, g, b) 
+	end
 end
 
+---@param frame any
+---@param unit string
 function Healbox:UpdateUnitBuffs(frame, unit)
 	local buffIndex = 1
 	for i = 1, 40 do
@@ -522,14 +568,19 @@ function Healbox:UpdateUnitBuffs(frame, unit)
 	for i = buffIndex, 4 do frame["buff"..i]:Hide() end
 end
 
+---@param frame any
+---@param unit string
 function Healbox:UpdateUnitDebuffs(frame, unit)
-	local highestWeight, highestType = 10, nil
+	---@type integer
+	local highestWeight = 10
+	---@type string|nil
+	local highestType = nil
 	local hasCurse, hasDisease, hasMagic, hasPoison = false, false, false, false
 
 	for i = 1, 40 do
 		local name, _, _, _, dType = UnitDebuff(unit, i)
 		if not name then break end
-		if dType then
+		if type(dType) == "string" and dType ~= "" then
 			if dType == "Curse" then hasCurse = true
 			elseif dType == "Disease" then hasDisease = true
 			elseif dType == "Magic" then hasMagic = true
@@ -543,10 +594,11 @@ function Healbox:UpdateUnitDebuffs(frame, unit)
 		end
 	end
 	
-	if highestType then
+	if type(highestType) == "string" then
 		local color = DEBUFF_COLOR[highestType]
+		local r, g, b = color[1], color[2], color[3]
 		frame.hasDebuffColor = color
-		frame.CurseBar:SetBackdropBorderColor(color[1], color[2], color[3])
+		frame.CurseBar:SetBackdropBorderColor(r, g, b)
 		frame.CurseBar:SetAlpha(1)
 	else
 		frame.hasDebuffColor = nil
@@ -561,19 +613,22 @@ function Healbox:UpdateUnitDebuffs(frame, unit)
 	for i = 1, count do
 		local btn = frame.spellButtons[i]
 		local cure = CuresByName[spells[i] or ""]
-		local btnHighlight
+		---@type string|nil
+		local btnHighlight = nil
 		
 		if cure then
+			---@type integer
 			local btnWeight = 10
-			if cure.Curse and hasCurse and DEBUFF_PRIORITY.Curse < btnWeight then btnWeight = DEBUFF_PRIORITY.Curse; btnHighlight = "Curse" end
-			if cure.Disease and hasDisease and DEBUFF_PRIORITY.Disease < btnWeight then btnWeight = DEBUFF_PRIORITY.Disease; btnHighlight = "Disease" end
-			if cure.Magic and hasMagic and DEBUFF_PRIORITY.Magic < btnWeight then btnWeight = DEBUFF_PRIORITY.Magic; btnHighlight = "Magic" end
-			if cure.Poison and hasPoison and DEBUFF_PRIORITY.Poison < btnWeight then btnWeight = DEBUFF_PRIORITY.Poison; btnHighlight = "Poison" end
+			if cure.Curse and hasCurse then btnWeight = 1; btnHighlight = "Curse" end
+			if cure.Disease and hasDisease and btnWeight > 2 then btnWeight = 2; btnHighlight = "Disease" end
+			if cure.Magic and hasMagic and btnWeight > 3 then btnWeight = 3; btnHighlight = "Magic" end
+			if cure.Poison and hasPoison and btnWeight > 4 then btnWeight = 4; btnHighlight = "Poison" end
 		end
 		
-		if btnHighlight then 
+		if type(btnHighlight) == "string" then 
 			local color = DEBUFF_COLOR[btnHighlight]
-			btn.CurseBar:SetBackdropBorderColor(color[1], color[2], color[3])
+			local r, g, b = color[1], color[2], color[3]
+			btn.CurseBar:SetBackdropBorderColor(r, g, b)
 			btn.CurseBar:SetAlpha(1)
 		else 
 			btn.CurseBar:SetAlpha(0)
@@ -586,9 +641,9 @@ function Healbox:OnSpellButtonEnter(btn)
 	local spellName = spells[btn.index]
 	
 	GameTooltip:SetOwner(btn, "ANCHOR_TOPLEFT")
-	if spellName and spellName ~= "" then
+	if type(spellName) == "string" and spellName ~= "" then
 		local link = GetSpellLink(spellName)
-		if link then GameTooltip:SetHyperlink(link) end
+		if type(link) == "string" then GameTooltip:SetHyperlink(link) end
 		local unit = btn:GetParent().TargetUnit
 		if unit and UnitExists(unit) then 
 			GameTooltip:AddLine("Target: |cFF00FF00" .. (UnitName(unit) or ""), 1, 1, 1) 
@@ -602,15 +657,14 @@ end
 function Healbox:OnSpellButtonReceiveDrag(btn)
 	if InCombatLockdown() then print("|cFFFF0000Healbox:|r Cannot change spells in combat."); return end
 	
-	---@type any, any, any
 	local infoType, index, bookType = GetCursorInfo()
 	local spellName, icon
 	
-	if infoType == "spell" then
+	if infoType == "spell" and index then
 		if IsPassiveSpell(index, bookType) then print("|cFFFF0000Healbox:|r Cannot assign passive spells."); return end
 		local sName = GetSpellInfo(index, bookType)
 		if sName then spellName, _, icon = GetSpellInfo(sName) end
-	elseif infoType == "macro" then
+	elseif infoType == "macro" and index then
 		spellName = GetMacroSpell(index)
 		if spellName then 
 			_, _, icon = GetSpellInfo(spellName)
@@ -631,16 +685,17 @@ function Healbox:OnSpellButtonReceiveDrag(btn)
 	self:UpdateSpells()
 	ClearCursor()
 	
-	if IsShiftKeyDown() and oldSpell ~= nil then PickupSpell(oldSpell) end
+	if IsShiftKeyDown() and oldSpell then PickupSpell(oldSpell) end
 end
 
 function Healbox:OnSpellButtonDragStart(btn)
-	if InCombatLockdown() or not IsShiftKeyDown() then return end
+	if InCombatLockdown() then return end
+	if not IsShiftKeyDown() then return end
 	local spells = DB.spells
 	local icons = DB.icons
 	local spellName = spells[btn.index]
 	
-	if spellName and spellName ~= "" then
+	if type(spellName) == "string" and spellName ~= "" then
 		spells[btn.index] = nil
 		icons[btn.index] = nil
 		self:UpdateSpells()
@@ -648,23 +703,33 @@ function Healbox:OnSpellButtonDragStart(btn)
 	end
 end
 
-function Healbox:OnUnitFrameEvent(frame, action, value)
-	if action == "SHOW" then
-		local unit = frame:GetAttribute("unit")
-		if unit then
-			frame.TargetUnit = unit
-			self.unitFrames[unit] = self.unitFrames[unit] or {}
-			self.unitFrames[unit][frame] = true
-			self:RefreshFrameData(frame, unit)
-		end
-		self:UpdateButtons()
-	elseif action == "HIDE" then
-		local unit = frame.TargetUnit
-		if unit and self.unitFrames[unit] then self.unitFrames[unit][frame] = nil end
-		frame.TargetUnit = nil
-	elseif action == "UPDATE_UNIT" then
-		if frame.TargetUnit and self.unitFrames[frame.TargetUnit] then self.unitFrames[frame.TargetUnit][frame] = nil end
-		if value then
+---@param frame any
+function Healbox:OnFrameShow(frame)
+	local unit = frame:GetAttribute("unit")
+	if type(unit) == "string" then
+		frame.TargetUnit = unit
+		self.unitFrames[unit] = self.unitFrames[unit] or {}
+		self.unitFrames[unit][frame] = true
+		self:RefreshFrameData(frame, unit)
+	end
+	self:UpdateButtons()
+end
+
+---@param frame any
+function Healbox:OnFrameHide(frame)
+	local unit = frame.TargetUnit
+	if type(unit) == "string" and self.unitFrames[unit] then self.unitFrames[unit][frame] = nil end
+	frame.TargetUnit = nil
+end
+
+---@param frame any
+---@param name string
+---@param value any
+function Healbox:OnFrameAttributeChanged(frame, name, value)
+	if name == "unit" then
+		local currentUnit = frame.TargetUnit
+		if type(currentUnit) == "string" and self.unitFrames[currentUnit] then self.unitFrames[currentUnit][frame] = nil end
+		if type(value) == "string" then
 			frame.TargetUnit = value
 			self.unitFrames[value] = self.unitFrames[value] or {}
 			self.unitFrames[value][frame] = true
@@ -675,15 +740,31 @@ function Healbox:OnUnitFrameEvent(frame, action, value)
 	end
 end
 
+---@param self any
+---@param event string
+local function OnEvent(self, event, ...)
+	if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" or event == "UNIT_AURA" then
+		Healbox:OnUnitEvent(event, ...)
+	elseif unitPowerEvents[event] then
+		Healbox:OnUnitEvent("UNIT_POWER", ...)
+	elseif event == "PARTY_MEMBERS_CHANGED" then
+		Healbox:UpdateRoster()
+	else
+		local handler = rawget(Healbox, event)
+		if handler then 
+			handler(Healbox, ...) 
+		end
+	end
+end
+
 EventFrame:RegisterEvent("ADDON_LOADED")
 EventFrame:RegisterEvent("PLAYER_LOGIN")
+EventFrame:SetScript("OnEvent", OnEvent)
 
-EventFrame:SetScript("OnEvent", function(self, event, ...)
-	if Healbox[event] then Healbox[event](Healbox, ...) end
-end)
-
+---@type number
 local updateTimer = 0
 EventFrame:SetScript("OnUpdate", function(self, elapsed)
+	---@cast elapsed number
 	updateTimer = updateTimer + elapsed
 	if updateTimer >= 0.15 then
 		updateTimer = 0
