@@ -51,7 +51,8 @@ local SPELL_LIST = {
 	{ 552, { Disease = true } }, { 528, { Disease = true } }, { 527, { Magic = true } },
 	{ 526, { Poison = true, Disease = true } }, { 51886, { Poison = true, Disease = true, Curse = true } },
 	{ 1152, { Poison = true, Disease = true } }, { 4987, { Poison = true, Disease = true, Magic = true } },
-	{ 475, { Curse = true } }, { 32375, { Magic = true } }
+	{ 475, { Curse = true } }, { 32375, { Magic = true } },
+	{ 520869, { Poison = true, Disease = true } }
 }
 
 local DEBUFF_PRIORITY = { Curse = 1, Disease = 2, Magic = 3, Poison = 4 }
