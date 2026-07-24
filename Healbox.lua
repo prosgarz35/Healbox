@@ -1,4 +1,4 @@
----@diagnostic disable: unnecessary-if, assign-type-mismatch, param-type-mismatch
+﻿---@diagnostic disable: unnecessary-if, assign-type-mismatch, param-type-mismatch
 ---@type string
 local addonName = ...
 
@@ -25,8 +25,11 @@ Healbox.activeFrames = {}
 Healbox.unitFrames = {}
 Healbox.activeSpellsHash = {}
 Healbox.canCure = { Curse = false, Disease = false, Magic = false, Poison = false }
+Healbox.usableCache = {}
+Healbox.manaCache = {}
 Healbox.pendingButtonUpdate = false
 Healbox.pendingRosterUpdate = false
+Healbox.needsCacheUpdate = false
 
 local _G = _G
 local wipe, unpack, pairs, ipairs, type = wipe, unpack, pairs, ipairs, type
@@ -40,6 +43,11 @@ local UnitHealth, UnitHealthMax, UnitPower, UnitPowerMax, UnitPowerType = _G.Uni
 local UnitBuff, UnitDebuff = _G.UnitBuff, _G.UnitDebuff
 local PickupSpell, ClearCursor = _G.PickupSpell, _G.ClearCursor
 local PowerBarColor = _G.PowerBarColor
+
+-- Caching global functions for Lua 5.1 performance
+local print = _G.print
+local InterfaceOptions_AddCategory = _G.InterfaceOptions_AddCategory
+local InterfaceOptionsFrame_OpenToCategory = _G.InterfaceOptionsFrame_OpenToCategory
 
 ---@type fun(): boolean
 local InCombatLockdown = _G.InCombatLockdown
@@ -57,6 +65,7 @@ local GetSpellLink = _G.GetSpellLink
 local GetCursorInfo = _G.GetCursorInfo
 
 ---@type fun(index: number): string|nil
+local GetMacroInfo = _G.GetMacroInfo
 local GetMacroSpell = _G.GetMacroSpell
 
 ---@type fun(index: number, bookType: string): boolean
@@ -80,6 +89,9 @@ local unitPowerEvents = {
 ---@type table<string, table<string, boolean>|nil>
 local CuresByName = {}
 
+--- NOTE: SPELL_LIST contains hardcoded dispel spells for performance.
+-- To add custom dispels ( quest items, racial abilities, trinkets ),
+-- add them here or use the in-game options if implemented in future versions.
 ---@type { [1]: number, [2]: table<string, boolean> }[]
 local SPELL_LIST = {
 	{ 2782, { Curse = true, Magic = true } },
@@ -113,13 +125,8 @@ local BACKDROP_TPL = {
 	tile = true, tileSize = 8, edgeSize = 8, insets = { left = 2, right = 2, top = 2, bottom = 2 }
 }
 
----@type table<string, boolean>
-local usableCache = {}
----@type table<string, boolean>
-local manaCache = {}
-
-local function CreateBar(parent, height, color, anchor)
-	local bar = CreateFrame("StatusBar", nil, parent)
+local function CreateBar(parent, name, height, color, anchor)
+	local bar = CreateFrame("StatusBar", parent:GetName()..name, parent)
 	bar:SetSize(116, height)
 	bar:SetPoint("TOPLEFT", anchor or parent, anchor and "BOTTOMLEFT" or "TOPLEFT", anchor and 0 or 2, anchor and 0 or -2)
 	bar:SetStatusBarTexture("Interface/TargetingFrame/UI-StatusBar")
@@ -129,7 +136,7 @@ local function CreateBar(parent, height, color, anchor)
 end
 
 local function CreateBuffFrame(parent, index)
-	local buff = CreateFrame("Frame", nil, parent)
+	local buff = CreateFrame("Frame", parent:GetName().."_Buff"..index, parent)
 	buff:SetSize(20, 20)
 	buff:SetPoint("RIGHT", index == 1 and parent or parent["buff"..(index-1)], "LEFT", -2, 0)
 	
@@ -139,7 +146,7 @@ local function CreateBuffFrame(parent, index)
 	buff.count = buff:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
 	buff.count:SetPoint("BOTTOMRIGHT", 2, -2)
 	
-	buff.cooldown = CreateFrame("Cooldown", nil, buff, "CooldownFrameTemplate")
+	buff.cooldown = CreateFrame("Cooldown", buff:GetName().."CD", buff, "CooldownFrameTemplate")
 	buff.cooldown:SetAllPoints()
 	buff.cooldown:SetReverse(true)
 	
@@ -154,12 +161,12 @@ local function CreateCurseBar(parent, sizeX, sizeY, edgeSize, strata)
 	cb:SetSize(sizeX, sizeY)
 	cb:SetPoint("CENTER")
 	cb:SetBackdrop({ edgeFile = "Interface/Tooltips/UI-Tooltip-Border", edgeSize = edgeSize, insets = { left = 0, right = 0, top = 0, bottom = 0 } })
-	cb:SetAlpha(0)
+	cb:Hide()
 	return cb
 end
 
 local function CreateSpellButton(parent, index)
-	local btn = CreateFrame("Button", nil, parent, "SecureActionButtonTemplate")
+	local btn = CreateFrame("Button", parent:GetName().."_Spell"..index, parent, "SecureActionButtonTemplate")
 	btn:SetSize(28, 28)
 	btn.index = index
 	btn:SetPoint("LEFT", parent, "RIGHT", 4 + (index - 1) * 32, 0)
@@ -191,14 +198,14 @@ local function InitialConfigFunction(self)
 	self:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
 	self:RegisterForClicks("AnyUp")
 
-	self.healthBar = CreateBar(self, 24, {0, 1, 0})
+	self.healthBar = CreateBar(self, "HealthBar", 24, {0, 1, 0})
 	self.healthBar.text:SetPoint("LEFT", 6, 0)
 	self.healthBar.text:SetJustifyH("LEFT")
 	
 	self.healthBar.hpText = self.healthBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	self.healthBar.hpText:SetPoint("RIGHT", -6, 0)
 
-	self.manaBar = CreateBar(self, 4, {0, 0, 1}, self.healthBar)
+	self.manaBar = CreateBar(self, "ManaBar", 4, {0, 0, 1}, self.healthBar)
 	
 	self.CurseBar = CreateCurseBar(self, 124, 32, 16, "MEDIUM")
 	self.CurseBar:ClearAllPoints()
@@ -224,7 +231,9 @@ function Healbox:CreatePartyHeader()
 	container:SetMovable(true)
 	container:SetClampedToScreen(true)
 	container:RegisterForDrag("LeftButton")
-	container:SetScript("OnDragStart", container.StartMoving)
+	container:SetScript("OnDragStart", function(f)
+		if not InCombatLockdown() then f:StartMoving() end
+	end)
 	container:SetScript("OnDragStop", function(f)
 		f:StopMovingOrSizing()
 		local p, _, rp, x, y = f:GetPoint()
@@ -318,7 +327,10 @@ function Healbox:ADDON_LOADED(name)
 	
 	local scl = rawget(_G, "SlashCmdList")
 	if scl then
-		scl["HEALBOX"] = function() InterfaceOptionsFrame_OpenToCategory("Healbox") end
+		scl["HEALBOX"] = function()
+			InterfaceOptionsFrame_OpenToCategory("Healbox")
+			InterfaceOptionsFrame_OpenToCategory("Healbox")
+		end
 	end
 end
 
@@ -346,6 +358,8 @@ function Healbox:PLAYER_LOGIN()
 	EventFrame:RegisterEvent("PARTY_MEMBERS_CHANGED")
 	EventFrame:RegisterEvent("SPELLS_CHANGED")
 	EventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+	EventFrame:RegisterEvent("SPELL_UPDATE_COOLDOWN")
+	EventFrame:RegisterEvent("SPELL_UPDATE_USABLE")
 end
 
 function Healbox:UpdateRoster()
@@ -416,10 +430,34 @@ function Healbox:UpdateSpells()
 		end
 	end
 	
+	self:UpdateSpellCache()
+	
 	for frame in pairs(self.activeFrames) do
 		if frame.TargetUnit then self:UpdateUnitDebuffs(frame, frame.TargetUnit) end
 	end
 	self:UpdateButtons()
+end
+
+function Healbox:UpdateSpellCache()
+	local count = DB.buttonCount
+	local spells = DB.spells
+	for i = 1, count do
+		local spellName = spells[i]
+		if type(spellName) == "string" and spellName ~= "" then
+			local isUsable, notEnoughMana = IsUsableSpell(spellName)
+			self.usableCache[spellName] = isUsable
+			self.manaCache[spellName] = notEnoughMana
+		end
+	end
+end
+
+function Healbox:SPELL_UPDATE_COOLDOWN()
+	-- Throttle: only set flag, actual update happens in OnUpdateTimer
+	self.needsCacheUpdate = true
+end
+
+function Healbox:SPELL_UPDATE_USABLE()
+	self:UpdateSpellCache()
 end
 
 function Healbox:UpdateButtons()
@@ -464,16 +502,14 @@ function Healbox:OnUpdateTimer()
 	local count = DB.buttonCount
 	local spells = DB.spells
 	
-	wipe(usableCache)
-	wipe(manaCache)
-
-	for i = 1, count do
-		local spellName = spells[i]
-		if type(spellName) == "string" and spellName ~= "" then
-			usableCache[spellName], manaCache[spellName] = IsUsableSpell(spellName)
-		end
+	-- Update spell cache if flagged by SPELL_UPDATE_COOLDOWN
+	if self.needsCacheUpdate then
+		self:UpdateSpellCache()
+		self.needsCacheUpdate = false
 	end
-
+	
+	-- Удалили wipe и IsUsableSpell - таймер только читает из кэша, который обновляется событиями
+	
 	for frame in pairs(self.activeFrames) do
 		local unit = frame.TargetUnit
 		if type(unit) == "string" and UnitIsVisible(unit) and not UnitIsDeadOrGhost(unit) then
@@ -481,7 +517,10 @@ function Healbox:OnUpdateTimer()
 				local spellName = spells[i]
 				if type(spellName) == "string" and spellName ~= "" then
 					local btn = frame.spellButtons[i]
-					local isUsable, notEnoughMana = usableCache[spellName], manaCache[spellName]
+					
+					-- Читаем значения из кэша
+					local isUsable = self.usableCache[spellName]
+					local notEnoughMana = self.manaCache[spellName]
 					local inRange = IsSpellInRange(spellName, unit)
 					
 					if (isUsable or notEnoughMana) and (inRange == 0) then
@@ -494,6 +533,12 @@ function Healbox:OnUpdateTimer()
 						btn.icon:SetVertexColor(0.3, 0.3, 0.3)
 					end
 				end
+			end
+		else
+			-- Reset stuck buttons for dead targets
+			for i = 1, count do
+				local btn = frame.spellButtons[i]
+				btn.icon:SetVertexColor(0.3, 0.3, 0.3)
 			end
 		end
 	end
@@ -602,15 +647,20 @@ function Healbox:UpdateUnitDebuffs(frame, unit)
 		end
 	end
 	
+	-- Visual caching: update only if changed to prevent unnecessary API calls
+	local currentColor = frame.hasDebuffColor
 	if type(highestType) == "string" then
 		local color = DEBUFF_COLOR[highestType]
 		local r, g, b = color[1], color[2], color[3]
 		frame.hasDebuffColor = color
-		frame.CurseBar:SetBackdropBorderColor(r, g, b)
-		frame.CurseBar:SetAlpha(1)
+		-- Only update border if color changed
+		if not currentColor or currentColor[1] ~= r or currentColor[2] ~= g or currentColor[3] ~= b then
+			frame.CurseBar:SetBackdropBorderColor(r, g, b)
+			frame.CurseBar:Show()
+		end
 	else
 		frame.hasDebuffColor = nil
-		frame.CurseBar:SetAlpha(0)
+		frame.CurseBar:Hide()
 	end
 	
 	self:UpdateUnitHealth(frame, unit)
@@ -636,10 +686,17 @@ function Healbox:UpdateUnitDebuffs(frame, unit)
 		if type(btnHighlight) == "string" then 
 			local color = DEBUFF_COLOR[btnHighlight]
 			local r, g, b = color[1], color[2], color[3]
-			btn.CurseBar:SetBackdropBorderColor(r, g, b)
-			btn.CurseBar:SetAlpha(1)
+			-- Visual caching for button CurseBar
+			if btn.lastDebuffType ~= btnHighlight then
+				btn.CurseBar:SetBackdropBorderColor(r, g, b)
+				btn.CurseBar:Show()
+				btn.lastDebuffType = btnHighlight
+			end
 		else 
-			btn.CurseBar:SetAlpha(0)
+			if btn.lastDebuffType then
+				btn.CurseBar:Hide()
+				btn.lastDebuffType = nil
+			end
 		end
 	end
 end
@@ -677,8 +734,15 @@ function Healbox:OnSpellButtonReceiveDrag(btn)
 		if spellName then 
 			_, _, icon = GetSpellInfo(spellName)
 		else 
-			print("|cFFFF0000Healbox:|r This macro does not cast a recognized spell.")
-			return 
+			-- Fallback: если GetMacroSpell вернул nil, пробуем получить через GetMacroInfo
+			local macroName, _, iconPath = GetMacroInfo(index)
+			if macroName then
+				spellName = macroName
+				if iconPath then icon = iconPath end
+			else 
+				print("|cFFFF0000Healbox:|r This macro does not cast a recognized spell.")
+				return 
+			end
 		end
 	else 
 		return 
@@ -711,6 +775,16 @@ function Healbox:OnSpellButtonDragStart(btn)
 	end
 end
 
+-- OnUpdate timer (moved before OnFrameShow to fix scope bug)
+local updateTimer = 0
+local function OnUpdateTimerTick(_, elapsed)
+	updateTimer = updateTimer + elapsed
+	if updateTimer >= 0.15 then
+		updateTimer = 0
+		Healbox:OnUpdateTimer()
+	end
+end
+
 ---@param frame any
 function Healbox:OnFrameShow(frame)
 	local unit = frame:GetAttribute("unit")
@@ -721,13 +795,28 @@ function Healbox:OnFrameShow(frame)
 		self:RefreshFrameData(frame, unit)
 	end
 	self:UpdateButtons()
+	
+	-- Wake up OnUpdate timer if it was sleeping
+	if next(self.activeFrames) then
+		EventFrame:SetScript("OnUpdate", OnUpdateTimerTick)
+	end
 end
 
 ---@param frame any
 function Healbox:OnFrameHide(frame)
 	local unit = frame.TargetUnit
-	if type(unit) == "string" and self.unitFrames[unit] then self.unitFrames[unit][frame] = nil end
+	if type(unit) == "string" and self.unitFrames[unit] then
+		self.unitFrames[unit][frame] = nil
+		if not next(self.unitFrames[unit]) then
+			self.unitFrames[unit] = nil
+		end
+	end
 	frame.TargetUnit = nil
+	
+	-- Sleep if no frames remain
+	if not next(self.activeFrames) then
+		EventFrame:SetScript("OnUpdate", nil)
+	end
 end
 
 ---@param frame any
@@ -736,7 +825,12 @@ end
 function Healbox:OnFrameAttributeChanged(frame, name, value)
 	if name == "unit" then
 		local currentUnit = frame.TargetUnit
-		if type(currentUnit) == "string" and self.unitFrames[currentUnit] then self.unitFrames[currentUnit][frame] = nil end
+		if type(currentUnit) == "string" and self.unitFrames[currentUnit] then
+			self.unitFrames[currentUnit][frame] = nil
+			if not next(self.unitFrames[currentUnit]) then
+				self.unitFrames[currentUnit] = nil
+			end
+		end
 		if type(value) == "string" then
 			frame.TargetUnit = value
 			self.unitFrames[value] = self.unitFrames[value] or {}
@@ -746,42 +840,47 @@ function Healbox:OnFrameAttributeChanged(frame, name, value)
 			frame.TargetUnit = nil
 		end
 	end
+	
+	-- Sleep if no frames remain
+	if not next(self.activeFrames) then
+		EventFrame:SetScript("OnUpdate", nil)
+	end
 end
 
 EventFrame:RegisterEvent("ADDON_LOADED")
 EventFrame:RegisterEvent("PLAYER_LOGIN")
 
--- Event Handlers table for O(1) dispatch
-local EventHandlers = {
-	UNIT_HEALTH = function(...) Healbox:OnUnitEvent("UNIT_HEALTH", ...) end,
-	UNIT_MAXHEALTH = function(...) Healbox:OnUnitEvent("UNIT_MAXHEALTH", ...) end,
-	UNIT_AURA = function(...) Healbox:OnUnitEvent("UNIT_AURA", ...) end,
-}
-for ev in pairs(unitPowerEvents) do
-	EventHandlers[ev] = function(...) Healbox:OnUnitEvent("UNIT_POWER", ...) end
+-- Event Handlers table for O(1) dispatch (explicit args to avoid GC churn in Lua 5.1)
+local function OnPowerEvent(unit)
+	Healbox:OnUnitEvent("UNIT_POWER", unit)
 end
-EventHandlers["PARTY_MEMBERS_CHANGED"] = function() Healbox:UpdateRoster() end
 
-local function OnEvent(_, event, ...)
+local EventHandlers = {
+	UNIT_HEALTH = function(unit) Healbox:OnUnitEvent("UNIT_HEALTH", unit) end,
+	UNIT_MAXHEALTH = function(unit) Healbox:OnUnitEvent("UNIT_MAXHEALTH", unit) end,
+	UNIT_AURA = function(unit) Healbox:OnUnitEvent("UNIT_AURA", unit) end,
+	PARTY_MEMBERS_CHANGED = function() Healbox:UpdateRoster() end,
+	SPELL_UPDATE_COOLDOWN = function() Healbox:SPELL_UPDATE_COOLDOWN() end,
+	SPELL_UPDATE_USABLE = function() Healbox:SPELL_UPDATE_USABLE() end,
+}
+
+for ev in pairs(unitPowerEvents) do
+	EventHandlers[ev] = OnPowerEvent
+end
+
+---@type string
+---@param event string
+local function OnEvent(_, event, arg1)
+	-- _: EventFrame (not used), event name, arg1 (unit or nil)
 	local handler = EventHandlers[event]
 	if handler then
-		handler(...)
+		handler(arg1)
 	else
 		local method = rawget(Healbox, event)
 		if method then 
-			method(Healbox, ...) -- Явно передаем Healbox в качестве self
+			method(Healbox, arg1) 
 		end
 	end
 end
 
 EventFrame:SetScript("OnEvent", OnEvent)
-
----@type number
-local updateTimer = 0
-EventFrame:SetScript("OnUpdate", function(_, elapsed)
-	updateTimer = updateTimer + elapsed
-	if updateTimer >= 0.15 then
-		updateTimer = 0
-		Healbox:OnUpdateTimer()
-	end
-end)
