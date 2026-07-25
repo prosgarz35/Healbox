@@ -1,6 +1,10 @@
 ## Interface: 30300
-## Title: Healbox
-## Notes: Lightweight party healer frame
+## Title: Healbox v3.1
+## Notes: Performance-optimized party frame addon for WotLK 3.3.5a
+## Author: prosgarz35 (Ace3/Healium patterns)
+## Version: 3.1
 ## SavedVariablesPerCharacter: HealboxDB
+## X-Website: https://gitverse.ru/prosgarz35/Healbox
+## X-Repository: https://github.com/prosgarz35/Healbox
 
 Healbox.lua

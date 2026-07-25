@@ -21,18 +21,23 @@ local Healbox = {}
 
 local MAX_BUTTONS = 15
 
-Healbox.activeFrames = {}
-Healbox.unitFrames = {}
+-- Weak tables for automatic cleanup (Ace3/Healium pattern - reduces GC pressure)
+Healbox.activeFrames = setmetatable({}, {__mode='k'})
+Healbox.unitFrames = {}  -- Still needs strong keys for unit lookup
 Healbox.activeSpellsHash = {}
 Healbox.canCure = { Curse = false, Disease = false, Magic = false, Poison = false }
 Healbox.usableCache = {}
 Healbox.manaCache = {}
+Healbox.resolvedSpells = {}  -- Cache for macro -> spell resolution
 Healbox.pendingButtonUpdate = false
 Healbox.pendingRosterUpdate = false
 Healbox.needsCacheUpdate = false
 
+-- Shared spacer string for tooltips (reduce GC)
+local SPACER = " "
+
 local _G = _G
-local wipe, unpack, pairs, ipairs, type = wipe, unpack, pairs, ipairs, type
+local wipe, unpack, pairs, ipairs, type, next = wipe, unpack, pairs, ipairs, type, next
 local math_max, math_floor = math.max, math.floor
 local string_format = string.format
 
@@ -42,7 +47,7 @@ local UnitIsVisible, UnitIsDeadOrGhost, UnitExists, UnitName = _G.UnitIsVisible,
 local UnitHealth, UnitHealthMax, UnitPower, UnitPowerMax, UnitPowerType = _G.UnitHealth, _G.UnitHealthMax, _G.UnitPower, _G.UnitPowerMax, _G.UnitPowerType
 local UnitBuff, UnitDebuff = _G.UnitBuff, _G.UnitDebuff
 local PickupSpell, ClearCursor = _G.PickupSpell, _G.ClearCursor
-local PowerBarColor = _G.PowerBarColor
+
 
 -- Caching global functions for Lua 5.1 performance
 local print = _G.print
@@ -155,9 +160,9 @@ local function CreateBuffFrame(parent, index)
 	return buff
 end
 
-local function CreateCurseBar(parent, sizeX, sizeY, edgeSize, strata)
+local function CreateCurseBar(parent, sizeX, sizeY, edgeSize)
 	local cb = CreateFrame("Frame", nil, parent)
-	cb:SetFrameStrata(strata)
+	cb:SetFrameLevel(parent:GetFrameLevel() + 2)
 	cb:SetSize(sizeX, sizeY)
 	cb:SetPoint("CENTER")
 	cb:SetBackdrop({ edgeFile = "Interface/Tooltips/UI-Tooltip-Border", edgeSize = edgeSize, insets = { left = 0, right = 0, top = 0, bottom = 0 } })
@@ -181,7 +186,7 @@ local function CreateSpellButton(parent, index)
 	btn.icon:SetTexture("Interface/Icons/INV_Misc_QuestionMark")
 	btn.icon:SetVertexColor(0.5, 0.5, 0.5)
 
-	btn.CurseBar = CreateCurseBar(btn, 36, 36, 28, "HIGH")
+	btn.CurseBar = CreateCurseBar(btn, 36, 36, 28)
 	
 	btn:SetScript("OnEnter", function(s) Healbox:OnSpellButtonEnter(s) end)
 	btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -207,13 +212,14 @@ local function InitialConfigFunction(self)
 
 	self.manaBar = CreateBar(self, "ManaBar", 4, {0, 0, 1}, self.healthBar)
 	
-	self.CurseBar = CreateCurseBar(self, 124, 32, 16, "MEDIUM")
+	self.CurseBar = CreateCurseBar(self, 124, 32, 16)
 	self.CurseBar:ClearAllPoints()
 	self.CurseBar:SetPoint("TOPLEFT", self, "TOPLEFT", -4, 4)
 	self.CurseBar:SetPoint("BOTTOMLEFT", self, "BOTTOMLEFT", -4, -4)
 
 	self.spellButtons = {}
-	for i = 1, 4 do CreateBuffFrame(self, i) end
+	self.buffFrames = {}
+	for i = 1, 4 do self.buffFrames[i] = CreateBuffFrame(self, i) end
 	for i = 1, MAX_BUTTONS do self.spellButtons[i] = CreateSpellButton(self, i) end
 
 	Healbox.activeFrames[self] = true
@@ -237,7 +243,9 @@ function Healbox:CreatePartyHeader()
 	container:SetScript("OnDragStop", function(f)
 		f:StopMovingOrSizing()
 		local p, _, rp, x, y = f:GetPoint()
-		DB.positions["Party"] = { point = p, relativePoint = rp, x = x, y = y }
+		DB.positions["Party"] = DB.positions["Party"] or {}
+		local pos = DB.positions["Party"]
+		pos.point, pos.relativePoint, pos.x, pos.y = p, rp, x, y
 	end)
 	
 	local title = container:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -315,7 +323,13 @@ function Healbox:ADDON_LOADED(name)
 	end
 	
 	for k, v in pairs(DB) do
-		if savedDB[k] == nil then savedDB[k] = v end
+		if savedDB[k] == nil then
+			if type(v) == "table" then
+				savedDB[k] = {}
+			else
+				savedDB[k] = v
+			end
+		end
 	end
 	DB = savedDB ---@type HealboxDB
 	rawset(_G, "HealboxDB", DB)
@@ -335,6 +349,7 @@ function Healbox:ADDON_LOADED(name)
 end
 
 function Healbox:PLAYER_LOGIN()
+	-- Pre-compute CuresByName cache (Healium optimization - cache lookup table once)
 	for _, data in ipairs(SPELL_LIST) do
 		local name = GetSpellInfo(data[1])
 		if name then 
@@ -409,6 +424,7 @@ end
 
 function Healbox:UpdateSpells()
 	wipe(self.activeSpellsHash)
+	wipe(self.resolvedSpells) -- Clear macro -> spell cache
 	for k in pairs(self.canCure) do self.canCure[k] = false end
 
 	local count = DB.buttonCount
@@ -418,11 +434,19 @@ function Healbox:UpdateSpells()
 	for i = 1, MAX_BUTTONS do
 		local spellName = spells[i]
 		if type(spellName) == "string" and spellName ~= "" then
-			self.activeSpellsHash[spellName] = true
-			if not icons[i] then _, _, icons[i] = GetSpellInfo(spellName) end
+			-- Resolve macro to actual spell for API calls
+			local actualSpell = spellName
+			if spellName:sub(1, 6) == "macro:" then
+				local mIndex = tonumber(spellName:sub(7))
+				actualSpell = GetMacroSpell(mIndex) or spellName
+			end
+			self.resolvedSpells[spellName] = actualSpell
+
+			self.activeSpellsHash[actualSpell] = true
+			if not icons[i] then _, _, icons[i] = GetSpellInfo(actualSpell) end
 			
 			if i <= count then
-				local cure = CuresByName[spellName]
+				local cure = CuresByName[actualSpell]
 				if cure then 
 					for k, v in pairs(cure) do if v then self.canCure[k] = true end end 
 				end
@@ -444,7 +468,8 @@ function Healbox:UpdateSpellCache()
 	for i = 1, count do
 		local spellName = spells[i]
 		if type(spellName) == "string" and spellName ~= "" then
-			local isUsable, notEnoughMana = IsUsableSpell(spellName)
+			local actualSpell = self.resolvedSpells[spellName] or spellName
+			local isUsable, notEnoughMana = IsUsableSpell(actualSpell)
 			self.usableCache[spellName] = isUsable
 			self.manaCache[spellName] = notEnoughMana
 		end
@@ -476,7 +501,15 @@ function Healbox:UpdateButtons()
 				btn:Show()
 				local spell = spells[i]
 				local hasSpell = (type(spell) == "string" and spell ~= "")
-				btn:SetAttribute("spell", hasSpell and spell or nil)
+				if type(spell) == "string" and spell:sub(1, 6) == "macro:" then
+					btn:SetAttribute("type1", "macro")
+					local macroIndex = spell:sub(7)
+					btn:SetAttribute("macro", macroIndex)
+					btn:SetAttribute("macrotext", GetMacroBody(tonumber(macroIndex)))
+				else
+					btn:SetAttribute("type1", "spell")
+					btn:SetAttribute("spell", hasSpell and spell or nil)
+				end
 				btn.icon:SetTexture((hasSpell and icons[i]) and icons[i] or "Interface/Icons/INV_Misc_QuestionMark")
 				btn.icon:SetVertexColor(hasSpell and 1 or 0.5, hasSpell and 1 or 0.5, hasSpell and 1 or 0.5)
 				
@@ -518,10 +551,13 @@ function Healbox:OnUpdateTimer()
 				if type(spellName) == "string" and spellName ~= "" then
 					local btn = frame.spellButtons[i]
 					
+					-- Resolve macro to actual spell for range check
+					local actualSpell = self.resolvedSpells[spellName] or spellName
+					
 					-- Читаем значения из кэша
 					local isUsable = self.usableCache[spellName]
 					local notEnoughMana = self.manaCache[spellName]
-					local inRange = IsSpellInRange(spellName, unit)
+					local inRange = IsSpellInRange(actualSpell, unit)
 					
 					if (isUsable or notEnoughMana) and (inRange == 0) then
 						btn.icon:SetVertexColor(1, 0.3, 0.3)
@@ -587,10 +623,11 @@ function Healbox:UpdateUnitMana(frame, unit)
 	frame.manaBar:SetValue(UnitIsDeadOrGhost(unit) and 0 or UnitPower(unit))
 	
 	local pType, pToken = UnitPowerType(unit)
-	local info = PowerBarColor[pToken] or PowerBarColor[pType]
-	if type(info) == "table" then 
-		local r, g, b = info.r or 0, info.g or 0, info.b or 1
-		frame.manaBar:SetStatusBarColor(r, g, b) 
+	-- Use PowerBarColor from global cache (Healium pattern)
+	local colorInfo = PowerBarColor[pToken] or PowerBarColor[pType]
+	if colorInfo then
+		local r, g, b = colorInfo.r or 0, colorInfo.g or 0, colorInfo.b or 1
+		frame.manaBar:SetStatusBarColor(r, g, b)
 	end
 end
 
@@ -599,10 +636,10 @@ end
 function Healbox:UpdateUnitBuffs(frame, unit)
 	local buffIndex = 1
 	for i = 1, 40 do
-		local name, _, icon, count, _, duration, expirationTime, unitCaster = UnitBuff(unit, i)
+		local name, _, icon, count, _, duration, expirationTime, unitCaster = UnitBuff(unit, i, "HELPFUL")
 		if not name then break end
 		if unitCaster == "player" and self.activeSpellsHash[name] then
-			local buffFrame = frame["buff"..buffIndex]
+			local buffFrame = frame.buffFrames[buffIndex]
 			if buffFrame then
 				buffFrame.icon:SetTexture(icon)
 				buffFrame.count:SetText(count > 1 and count or "")
@@ -618,20 +655,19 @@ function Healbox:UpdateUnitBuffs(frame, unit)
 			end
 		end
 	end
-	for i = buffIndex, 4 do frame["buff"..i]:Hide() end
+	for i = buffIndex, 4 do if frame.buffFrames[i] then frame.buffFrames[i]:Hide() end end
 end
 
 ---@param frame any
 ---@param unit string
 function Healbox:UpdateUnitDebuffs(frame, unit)
-	---@type number
+	-- Local variables on stack (Lua 5.1 optimal - 0 GC churn)
 	local highestWeight = 10
-	---@type string|nil
 	local highestType
 	local hasCurse, hasDisease, hasMagic, hasPoison = false, false, false, false
 
 	for i = 1, 40 do
-		local name, _, _, _, dType = UnitDebuff(unit, i)
+		local name, _, _, _, dType = UnitDebuff(unit, i, "HARMFUL")
 		if not name then break end
 		if type(dType) == "string" and dType ~= "" then
 			if dType == "Curse" then hasCurse = true
@@ -707,14 +743,50 @@ function Healbox:OnSpellButtonEnter(btn)
 	
 	GameTooltip:SetOwner(btn, "ANCHOR_TOPLEFT")
 	if type(spellName) == "string" and spellName ~= "" then
-		local link = GetSpellLink(spellName)
-		if type(link) == "string" then GameTooltip:SetHyperlink(link) end
+		if spellName:sub(1, 6) == "macro:" then
+			-- Macro: show tooltip with macro info
+			local macroIndex = tonumber(spellName:sub(7))
+			local macroName, _, iconPath = GetMacroInfo(macroIndex)
+			if macroName then
+				GameTooltip:SetText(macroName, 1, 1, 1)
+				if iconPath then GameTooltip:SetIcon(iconPath) end
+				
+				-- Try to get main spell from macro body
+				local macroText = GetMacroBody(macroIndex)
+				if type(macroText) == "string" then
+					-- Extract spell name from /cast line
+					local castLine = macroText:match("/cast%s+([^\n]+)")
+					if castLine then
+						-- Remove conditions in brackets, e.g. [target=mouseover, help]
+						local cleanSpell = castLine:gsub("%[.-]%s*", "")
+						-- Take only first spell if multiple (separated by semicolon)
+						cleanSpell = cleanSpell:match("^([^;]+)")
+						-- Trim whitespace
+						cleanSpell = cleanSpell:match("^%s*(.-)%s*$")
+						
+						if cleanSpell and cleanSpell ~= "" then
+							local link = GetSpellLink(cleanSpell)
+							if type(link) == "string" then
+								GameTooltip:AddLine(SPACER, 0, 0, 0) -- Spacer (reused string)
+								GameTooltip:AddLine("Main Spell: " .. link, 0.5, 0.8, 1)
+							end
+						end
+					end
+				end
+			end
+		else
+			-- Regular spell
+			local link = GetSpellLink(spellName)
+			if type(link) == "string" then GameTooltip:SetHyperlink(link) end
+		end
+		
 		local unit = btn:GetParent().TargetUnit
 		if unit and UnitExists(unit) then 
+			GameTooltip:AddLine(SPACER, 0, 0, 0) -- Spacer (reused string)
 			GameTooltip:AddLine("Target: |cFF00FF00" .. (UnitName(unit) or ""), 1, 1, 1) 
 		end
 	else
-		GameTooltip:SetText("|cFFFFFFFFNo Spell|n|cFF00FF00Drag and drop a spell|nhere from your spellbook.")
+		GameTooltip:SetText("|cFFFFFFFFNo Spell|n|cFF00FF00Drag and drop a spell or macro|nhere from your spellbook.")
 	end
 	GameTooltip:Show()
 end
@@ -723,26 +795,23 @@ function Healbox:OnSpellButtonReceiveDrag(btn)
 	if InCombatLockdown() then print("|cFFFF0000Healbox:|r Cannot change spells in combat."); return end
 	
 	local infoType, index, bookType = GetCursorInfo()
-	local spellName, icon
+	local saveValue, icon
 	
 	if infoType == "spell" and index then
 		if IsPassiveSpell(index, bookType) then print("|cFFFF0000Healbox:|r Cannot assign passive spells."); return end
 		local sName = GetSpellInfo(index, bookType)
-		if sName then spellName, _, icon = GetSpellInfo(sName) end
+		if sName then 
+			saveValue, _, icon = GetSpellInfo(sName) 
+		end
 	elseif infoType == "macro" and index then
-		spellName = GetMacroSpell(index)
+		saveValue = "macro:" .. tostring(index)
+		local spellName = GetMacroSpell(index)
 		if spellName then 
 			_, _, icon = GetSpellInfo(spellName)
 		else 
-			-- Fallback: если GetMacroSpell вернул nil, пробуем получить через GetMacroInfo
-			local macroName, _, iconPath = GetMacroInfo(index)
-			if macroName then
-				spellName = macroName
-				if iconPath then icon = iconPath end
-			else 
-				print("|cFFFF0000Healbox:|r This macro does not cast a recognized spell.")
-				return 
-			end
+			-- Fallback: get icon from macro itself
+			local _, _, iconPath = GetMacroInfo(index)
+			icon = iconPath
 		end
 	else 
 		return 
@@ -752,17 +821,26 @@ function Healbox:OnSpellButtonReceiveDrag(btn)
 	local icons = DB.icons
 	local oldSpell = spells[btn.index]
 	
-	spells[btn.index] = spellName
+	-- Save the new spell/macro
+	spells[btn.index] = saveValue
 	icons[btn.index] = icon
 	self:UpdateSpells()
 	ClearCursor()
 	
-	if IsShiftKeyDown() and oldSpell then PickupSpell(oldSpell) end
+	-- Return old spell/macro to cursor if Shift is held
+	if IsShiftKeyDown() and oldSpell then 
+		if type(oldSpell) == "string" and oldSpell:sub(1, 6) == "macro:" then
+			PickupMacro(tonumber(oldSpell:sub(7)))
+		elseif type(oldSpell) == "string" then
+			PickupSpell(oldSpell)
+		end
+	end
 end
 
 function Healbox:OnSpellButtonDragStart(btn)
 	if InCombatLockdown() then return end
 	if not IsShiftKeyDown() then return end
+	
 	local spells = DB.spells
 	local icons = DB.icons
 	local spellName = spells[btn.index]
@@ -771,7 +849,13 @@ function Healbox:OnSpellButtonDragStart(btn)
 		spells[btn.index] = nil
 		icons[btn.index] = nil
 		self:UpdateSpells()
-		PickupSpell(spellName)
+		
+		-- Pickup correct type (spell or macro)
+		if type(spellName) == "string" and spellName:sub(1, 6) == "macro:" then
+			PickupMacro(tonumber(spellName:sub(7)))
+		else
+			PickupSpell(spellName)
+		end
 	end
 end
 
