@@ -1,4 +1,4 @@
-﻿---@diagnostic disable: unnecessary-if, assign-type-mismatch, param-type-mismatch
+---@diagnostic disable: unnecessary-if, assign-type-mismatch, param-type-mismatch
 ---@type string
 local addonName = ...
 
@@ -72,6 +72,9 @@ local GetCursorInfo = _G.GetCursorInfo
 ---@type fun(index: number): string|nil
 local GetMacroInfo = _G.GetMacroInfo
 local GetMacroSpell = _G.GetMacroSpell
+local GetMacroBody = _G.GetMacroBody
+local PickupMacro = _G.PickupMacro
+local GetSpellName = _G.GetSpellName
 
 ---@type fun(index: number, bookType: string): boolean
 local IsPassiveSpell = _G.IsPassiveSpell
@@ -425,6 +428,8 @@ end
 function Healbox:UpdateSpells()
 	wipe(self.activeSpellsHash)
 	wipe(self.resolvedSpells) -- Clear macro -> spell cache
+	wipe(self.usableCache)
+	wipe(self.manaCache)
 	for k in pairs(self.canCure) do self.canCure[k] = false end
 
 	local count = DB.buttonCount
@@ -755,7 +760,7 @@ function Healbox:OnSpellButtonEnter(btn)
 				local macroText = GetMacroBody(macroIndex)
 				if type(macroText) == "string" then
 					-- Extract spell name from /cast line
-					local castLine = macroText:match("/cast%s+([^\n]+)")
+					local castLine = macroText:match("/cast%s+([^\n]+)") or macroText:match("/use%s+([^\n]+)")
 					if castLine then
 						-- Remove conditions in brackets, e.g. [target=mouseover, help]
 						local cleanSpell = castLine:gsub("%[.-]%s*", "")
@@ -799,7 +804,7 @@ function Healbox:OnSpellButtonReceiveDrag(btn)
 	
 	if infoType == "spell" and index then
 		if IsPassiveSpell(index, bookType) then print("|cFFFF0000Healbox:|r Cannot assign passive spells."); return end
-		local sName = GetSpellInfo(index, bookType)
+		local sName = GetSpellName(index, bookType)
 		if sName then 
 			saveValue, _, icon = GetSpellInfo(sName) 
 		end
